@@ -40,6 +40,7 @@ data/kegg_cache/*
 data/references/*.fa.gz
 data/references/*.fasta.gz
 data/references/*.fasta
+!data/references/ecoli_16S.fasta
 !data/references/.gitkeep
 
 # --- IDE ---
