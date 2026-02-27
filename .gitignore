@@ -1,0 +1,70 @@
+# ============================================================================
+# MicrobiomeDash .gitignore
+# ============================================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# --- Environment ---
+.env
+.venv
+env/
+venv/
+
+# --- Database ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Data (user data should not be committed) ---
+data/uploads/*
+data/datasets/*
+data/combined/*
+data/exports/*
+data/picrust2_runs/*
+data/kegg_cache/*
+!data/uploads/.gitkeep
+!data/datasets/.gitkeep
+!data/combined/.gitkeep
+!data/exports/.gitkeep
+!data/picrust2_runs/.gitkeep
+!data/kegg_cache/.gitkeep
+
+# --- Reference databases (too large for git) ---
+data/references/*.fa.gz
+data/references/*.fasta.gz
+data/references/*.fasta
+!data/references/.gitkeep
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Logs / Runtime ---
+*.log
+logs/
+run.pid
+
+# --- Claude Code ---
+.claude/
+
+# --- Test files ---
+test_*.py
+
+# --- R ---
+.Rhistory
+.RData
+.Rproj.user/

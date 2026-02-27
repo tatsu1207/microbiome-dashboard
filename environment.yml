@@ -1,0 +1,45 @@
+name: microbiome
+channels:
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  # --- Core ---
+  - python=3.11
+  - r-base=4.3
+  - pip
+
+  # --- Bioinformatics CLI tools ---
+  - fastqc
+  - cutadapt
+  - mafft
+  - fasttree
+  - vsearch
+  # PICRUSt2 installed separately due to dependency conflicts (see setup.sh)
+
+  # --- R packages (from conda-forge / bioconda) ---
+  - r-optparse
+  - r-jsonlite
+  - r-tidyverse
+  - bioconductor-dada2
+  - bioconductor-ancombc
+  - bioconductor-aldex2
+  - bioconductor-phyloseq
+
+  # --- Python packages (via pip for latest versions) ---
+  - pip:
+      - fastapi
+      - uvicorn[standard]
+      - dash
+      - dash-bootstrap-components
+      - plotly
+      - sqlalchemy
+      - pandas
+      - numpy
+      - scikit-bio
+      - scipy
+      - biopython
+      - python-multipart
+      - aiofiles
+      - celery
+      - redis
