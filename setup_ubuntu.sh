@@ -266,9 +266,18 @@ Rscript -e "
 # --- 5a: Conda-installable R packages ---
 # Install one-by-one so a conflict in one package doesn't block the rest.
 # Each entry: "conda_package_name:r_namespace"
+# NOTE: r-nloptr, r-lme4, r-ggrepel, r-htmltools, r-rmarkdown are installed via
+# conda to avoid compilation failures (they need system libs like libnlopt-dev).
+# These are dependencies of ANCOMBC, Maaslin2, and LinDA.
 R_CONDA_MAP=(
     "r-optparse:optparse"
     "r-jsonlite:jsonlite"
+    "r-nloptr:nloptr"
+    "r-lme4:lme4"
+    "r-lmertest:lmerTest"
+    "r-htmltools:htmltools"
+    "r-rmarkdown:rmarkdown"
+    "r-ggrepel:ggrepel"
     "bioconductor-dada2:dada2"
     "bioconductor-phyloseq:phyloseq"
 )
