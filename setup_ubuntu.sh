@@ -10,7 +10,7 @@
 #   - Re-runnable: safe to execute multiple times
 # ============================================================================
 
-set -e  # Exit on any error
+set -eo pipefail  # Exit on any error; propagate failures through pipes
 
 # --- Colors for output ---
 RED='\033[0;31m'
@@ -198,9 +198,33 @@ done
 if [ ${#BIOTOOLS_TO_INSTALL[@]} -gt 0 ]; then
     info "Installing missing tools: ${BIOTOOLS_TO_INSTALL[*]}"
     ${SOLVER} install -n "${ENV_NAME}" -c bioconda -c conda-forge \
-        "${BIOTOOLS_TO_INSTALL[@]}" -y 2>&1 | tail -5
-    success "Bioinformatics tools installed: ${BIOTOOLS_TO_INSTALL[*]}"
-    installed
+        "${BIOTOOLS_TO_INSTALL[@]}" -y 2>&1 | tail -5 || warn "Some biotools may have failed to install."
+
+    # Verify each newly-installed tool
+    for pkg in "${BIOTOOLS_TO_INSTALL[@]}"; do
+        # Find matching commands from the map
+        for tool_pair in "${BIOTOOLS_MAP[@]}"; do
+            map_pkg="${tool_pair%%:*}"
+            if [[ "${map_pkg}" == "${pkg}" ]]; then
+                cmds="${tool_pair##*:}"
+                IFS=',' read -ra CMD_ARRAY <<< "${cmds}"
+                found=false
+                for cmd in "${CMD_ARRAY[@]}"; do
+                    if has_env_cmd "${cmd}"; then
+                        found=true
+                        break
+                    fi
+                done
+                if ${found}; then
+                    success "Verified: ${pkg}"
+                    installed
+                else
+                    warn "${pkg} was not installed successfully."
+                fi
+                break
+            fi
+        done
+    done
 else
     info "All bioinformatics CLI tools already present."
 fi
@@ -232,9 +256,6 @@ fi
 # ============================================================================
 step "5" "Checking R packages"
 
-# Make sure we're in the right env
-conda activate "${ENV_NAME}"
-
 # --- 5a-pre: Ensure BiocManager is installed and version-matched to R ---
 # Conda may ship a BiocManager pinned to an older Bioconductor release that
 # does not match the current R version, causing all BiocManager::install()
@@ -261,7 +282,7 @@ Rscript -e "
         }
         message(sprintf('BiocManager now at %s', BiocManager::version()))
     })
-" 2>&1 | tail -5
+" 2>&1 | tail -5 || warn "BiocManager version check had issues (may be OK)."
 
 # --- 5a: Conda-installable R packages ---
 # Install one-by-one so a conflict in one package doesn't block the rest.
@@ -313,9 +334,9 @@ for pair in "${R_CONDA_MAP[@]}"; do
                     if (!requireNamespace('BiocManager', quietly=TRUE))
                         install.packages('BiocManager', repos='https://cloud.r-project.org')
                     BiocManager::install('${r_pkg}', ask=FALSE, update=FALSE)
-                " 2>&1 | tail -5
+                " 2>&1 | tail -5 || true
             else
-                Rscript -e "install.packages('${r_pkg}', repos='https://cloud.r-project.org')" 2>&1 | tail -5
+                Rscript -e "install.packages('${r_pkg}', repos='https://cloud.r-project.org')" 2>&1 | tail -5 || true
             fi
 
             if has_r_pkg "${r_pkg}"; then
@@ -366,7 +387,7 @@ if [ ${#R_BIOC_NEEDED[@]} -gt 0 ]; then
             if (!requireNamespace('BiocManager', quietly = TRUE))
                 install.packages('BiocManager', repos='https://cloud.r-project.org')
             BiocManager::install('${bioc_pkg}', ask=FALSE, update=FALSE)
-        " 2>&1 | tail -10
+        " 2>&1 | tail -10 || true
 
         if has_r_pkg "${bioc_pkg}"; then
             success "Bioconductor package installed: ${bioc_pkg}"
@@ -387,8 +408,10 @@ else
     Rscript -e "
         if (!requireNamespace('remotes', quietly=TRUE))
             install.packages('remotes', repos='https://cloud.r-project.org')
+        if (!requireNamespace('modeest', quietly=TRUE))
+            install.packages('modeest', repos='https://cloud.r-project.org')
         remotes::install_github('zhouhj1994/LinDA', upgrade='never')
-    " 2>&1 | tail -10
+    " 2>&1 | tail -10 || true
 
     if has_r_pkg "LinDA"; then
         success "LinDA installed from GitHub."
@@ -403,7 +426,7 @@ if has_r_pkg "vegan"; then
     skip "R package: vegan"
 else
     info "Installing vegan..."
-    Rscript -e "install.packages('vegan', repos='https://cloud.r-project.org')" 2>&1 | tail -5
+    Rscript -e "install.packages('vegan', repos='https://cloud.r-project.org')" 2>&1 | tail -5 || true
 
     if has_r_pkg "vegan"; then
         success "R package installed: vegan"
@@ -417,8 +440,6 @@ fi
 # STEP 6: Install Python packages
 # ============================================================================
 step "6" "Checking Python packages"
-
-conda activate "${ENV_NAME}"
 
 # Each entry: "import_module:pip_package_name"
 PYTHON_PACKAGES=(
@@ -455,9 +476,25 @@ done
 
 if [ ${#PYTHON_MISSING[@]} -gt 0 ]; then
     info "Installing missing Python packages: ${PYTHON_MISSING[*]}"
-    pip install "${PYTHON_MISSING[@]}" 2>&1 | tail -10
-    success "Python packages installed: ${PYTHON_MISSING[*]}"
-    installed
+    pip install "${PYTHON_MISSING[@]}" 2>&1 | tail -10 || warn "Some Python packages may have failed to install."
+
+    # Verify each newly-installed package
+    for pip_name in "${PYTHON_MISSING[@]}"; do
+        # Find matching module from the map
+        for pair in "${PYTHON_PACKAGES[@]}"; do
+            map_module="${pair%%:*}"
+            map_pip="${pair##*:}"
+            if [[ "${map_pip}" == "${pip_name}" ]]; then
+                if has_python_pkg "${map_module}"; then
+                    success "Verified: ${pip_name}"
+                    installed
+                else
+                    warn "${pip_name} was not installed successfully."
+                fi
+                break
+            fi
+        done
+    done
 else
     info "All Python packages already present."
 fi
@@ -541,21 +578,36 @@ fi
 if [[ "${SILVA_NEEDED}" == "true" ]]; then
     echo ""
     info "SILVA 138.1 is required for taxonomic assignment (~100 MB total)."
-    read -p "  Download missing files now? (Y/n): " DOWNLOAD_SILVA
+    read -p "  Download missing files now? (Y/n): " DOWNLOAD_SILVA || DOWNLOAD_SILVA="Y"
     
     if [[ ! "${DOWNLOAD_SILVA}" =~ ^[Nn]$ ]]; then
-        if [[ ! -f "${SILVA_TRAIN}" ]]; then
-            info "Downloading SILVA training set (~24 MB)..."
-            wget -q --show-progress -O "${SILVA_TRAIN}" \
-                "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz"
-            installed
-        fi
-        
-        if [[ ! -f "${SILVA_SPECIES}" ]]; then
-            info "Downloading SILVA species assignment (~77 MB)..."
-            wget -q --show-progress -O "${SILVA_SPECIES}" \
-                "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz"
-            installed
+        if ! has_cmd wget && ! has_cmd curl; then
+            warn "Neither wget nor curl found. Skipping SILVA download."
+            warn "Install wget (sudo apt install wget) and re-run setup."
+        else
+            if [[ ! -f "${SILVA_TRAIN}" ]]; then
+                info "Downloading SILVA training set (~24 MB)..."
+                if has_cmd wget; then
+                    wget -q --show-progress -O "${SILVA_TRAIN}" \
+                        "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz"
+                else
+                    curl -fSL -o "${SILVA_TRAIN}" \
+                        "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz"
+                fi
+                installed
+            fi
+
+            if [[ ! -f "${SILVA_SPECIES}" ]]; then
+                info "Downloading SILVA species assignment (~77 MB)..."
+                if has_cmd wget; then
+                    wget -q --show-progress -O "${SILVA_SPECIES}" \
+                        "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz"
+                else
+                    curl -fSL -o "${SILVA_SPECIES}" \
+                        "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz"
+                fi
+                installed
+            fi
         fi
         
         success "SILVA 138.1 databases downloaded."
