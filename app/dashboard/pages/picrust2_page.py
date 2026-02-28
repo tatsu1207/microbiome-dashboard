@@ -13,7 +13,7 @@ from pathlib import Path
 import dash_bootstrap_components as dbc
 from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 
-from app.config import PICRUST2_RUNS_DIR
+from app.config import DATASET_DIR, PICRUST2_RUNS_DIR
 from app.dashboard.app import app as dash_app
 
 MAX_CPUS = os.cpu_count() or 1
@@ -30,6 +30,25 @@ def _default_picrust2_threads() -> int:
 
 _DEFAULT_THREADS = _default_picrust2_threads()
 
+
+def _get_completed_datasets():
+    """Return dropdown options for datasets that have a BIOM table."""
+    from app.db.database import get_session
+    from app.db.models import Dataset
+
+    with get_session() as db:
+        datasets = (
+            db.query(Dataset)
+            .filter(Dataset.status == "complete", Dataset.asv_table_path.isnot(None))
+            .order_by(Dataset.created_at.desc())
+            .all()
+        )
+    return [
+        {"label": f"#{d.id} — {d.name}", "value": d.id}
+        for d in datasets
+    ]
+
+
 # ── Page Layout ───────────────────────────────────────────────────────────────
 
 
@@ -39,17 +58,34 @@ def get_layout():
     Pre-renders the history table server-side so it's always visible,
     and includes a one-shot interval to restore active-run progress.
     """
+    dataset_options = _get_completed_datasets()
+
     return dbc.Container(
         [
             html.H3("PICRUSt2 Functional Prediction", className="mb-2"),
             html.P(
-                "Upload a BIOM table to run PICRUSt2. Representative sequences "
-                "are extracted automatically from BIOM observation metadata. "
+                "Upload a BIOM table or select a completed DADA2 dataset to run "
+                "PICRUSt2. Representative sequences are extracted automatically "
+                "from BIOM observation metadata. "
                 "Produces EC, KO (optional), and MetaCyc pathway predictions.",
                 className="text-muted mb-4",
             ),
+            # ── DADA2 Dataset Selector ───────────────────────────────────
+            dbc.Label("Use DADA2 Dataset", className="fw-bold"),
+            dcc.Dropdown(
+                id="picrust2-dataset-select",
+                options=dataset_options,
+                placeholder="Select a completed DADA2 run..." if dataset_options
+                else "No completed DADA2 runs available",
+                disabled=not dataset_options,
+                className="mb-2",
+            ),
+            html.Div(
+                "— or —",
+                className="text-center text-muted my-2",
+            ),
             # ── BIOM Upload ──────────────────────────────────────────────
-            dbc.Label("BIOM Table", className="fw-bold"),
+            dbc.Label("Upload BIOM File", className="fw-bold"),
             dcc.Upload(
                 id="picrust2-upload-biom",
                 children=html.Div(
@@ -188,19 +224,65 @@ def get_layout():
 @dash_app.callback(
     Output("picrust2-biom-data", "data"),
     Output("picrust2-biom-status", "children"),
+    Output("picrust2-dataset-select", "value"),
     Input("picrust2-upload-biom", "contents"),
     State("picrust2-upload-biom", "filename"),
     prevent_initial_call=True,
 )
 def on_upload_biom(contents, filename):
-    """Validate and store uploaded BIOM file."""
+    """Validate and store uploaded BIOM file, clear dataset selection."""
     if not contents or not filename:
-        return None, ""
+        return None, "", no_update
     if not filename.endswith(".biom"):
-        return None, dbc.Alert("Please upload a .biom file", color="danger", className="py-1")
+        return None, dbc.Alert("Please upload a .biom file", color="danger", className="py-1"), no_update
     return {"contents": contents, "filename": filename}, html.Span(
         f"  {filename}", className="text-success"
-    )
+    ), None  # clear dataset dropdown
+
+
+@dash_app.callback(
+    Output("picrust2-biom-data", "data", allow_duplicate=True),
+    Output("picrust2-biom-status", "children", allow_duplicate=True),
+    Input("picrust2-dataset-select", "value"),
+    prevent_initial_call=True,
+)
+def on_select_dataset(dataset_id):
+    """Load BIOM path from a completed DADA2 dataset."""
+    if not dataset_id:
+        return None, ""
+
+    from app.db.database import get_session
+    from app.db.models import Dataset
+
+    with get_session() as db:
+        ds = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+        if not ds or not ds.asv_table_path:
+            return None, dbc.Alert("Dataset not found or missing BIOM.", color="danger", className="py-1")
+
+        biom_path = Path(ds.asv_table_path)
+        if not biom_path.is_absolute():
+            biom_path = DATASET_DIR / str(ds.id) / biom_path
+        if not biom_path.exists():
+            return None, dbc.Alert(
+                f"BIOM file not found: {biom_path}", color="danger", className="py-1"
+            )
+
+        data = {
+            "dataset_id": ds.id,
+            "dataset_biom_path": str(biom_path),
+            "filename": biom_path.name,
+        }
+        # Include rep_seqs path if available
+        if ds.rep_seqs_path:
+            fasta = Path(ds.rep_seqs_path)
+            if not fasta.is_absolute():
+                fasta = DATASET_DIR / str(ds.id) / fasta
+            if fasta.exists():
+                data["dataset_fasta_path"] = str(fasta)
+
+        return data, html.Span(
+            f"  DADA2 #{ds.id}: {biom_path.name}", className="text-success"
+        )
 
 
 @dash_app.callback(
@@ -208,7 +290,7 @@ def on_upload_biom(contents, filename):
     Input("picrust2-biom-data", "data"),
 )
 def toggle_launch_button(biom_data):
-    """Enable launch button when BIOM file is uploaded."""
+    """Enable launch button when BIOM file is uploaded or dataset selected."""
     return not biom_data
 
 
@@ -252,6 +334,8 @@ def on_launch(n_clicks, biom_data, skip_ko, threads_val):
             )
 
     try:
+        import shutil
+
         # Create DB record first to get the run ID
         with get_session() as db:
             run = Picrust2Run(
@@ -268,8 +352,19 @@ def on_launch(n_clicks, biom_data, skip_ko, threads_val):
             run_dir = PICRUST2_RUNS_DIR / str(run_id) / "input"
             run_dir.mkdir(parents=True, exist_ok=True)
 
-            biom_path = run_dir / biom_data["filename"]
-            _save_upload(biom_data["contents"], biom_path)
+            if "dataset_biom_path" in biom_data:
+                # Source from completed DADA2 dataset — copy files
+                biom_path = run_dir / biom_data["filename"]
+                shutil.copy2(biom_data["dataset_biom_path"], biom_path)
+                # Copy FASTA if available (avoids re-extracting from BIOM)
+                if biom_data.get("dataset_fasta_path"):
+                    fasta_dst = run_dir / "rep_seqs.fasta"
+                    shutil.copy2(biom_data["dataset_fasta_path"], fasta_dst)
+                    run.fasta_path = str(fasta_dst)
+            else:
+                # Uploaded file — decode base64
+                biom_path = run_dir / biom_data["filename"]
+                _save_upload(biom_data["contents"], biom_path)
 
             run.biom_path = str(biom_path)
             db.commit()
