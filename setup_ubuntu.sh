@@ -278,6 +278,11 @@ R_CONDA_MAP=(
     "r-htmltools:htmltools"
     "r-rmarkdown:rmarkdown"
     "r-ggrepel:ggrepel"
+    "r-desctools:DescTools"
+    "r-energy:energy"
+    "bioconductor-treesummarizedexperiment:TreeSummarizedExperiment"
+    "bioconductor-mia:mia"
+    "bioconductor-scater:scater"
     "bioconductor-dada2:dada2"
     "bioconductor-phyloseq:phyloseq"
 )
