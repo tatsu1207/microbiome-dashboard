@@ -172,8 +172,6 @@ BIOTOOLS_MAP=(
     "fastqc:fastqc"
     "cutadapt:cutadapt"
     "mafft:mafft"
-    "fasttree:FastTree,fasttree"
-    "vsearch:vsearch"
 )
 
 for tool_pair in "${BIOTOOLS_MAP[@]}"; do
@@ -420,11 +418,7 @@ PYTHON_PACKAGES=(
     "numpy:numpy"
     "scipy:scipy"
     "skbio:scikit-bio"
-    "Bio:biopython"
     "multipart:python-multipart"
-    "aiofiles:aiofiles"
-    "celery:celery"
-    "redis:redis"
     "biom:biom-format"
     "matplotlib:matplotlib"
     "fpdf:fpdf2"
@@ -648,8 +642,7 @@ for tool_info in \
     "R:R --version 2>&1 | head -1" \
     "FastQC:fastqc --version" \
     "Cutadapt:cutadapt --version" \
-    "MAFFT:mafft --version 2>&1 | head -1" \
-    "vsearch:vsearch --version 2>&1 | head -1"; do
+    "MAFFT:mafft --version 2>&1 | head -1"; do
     
     tool="${tool_info%%:*}"
     check_cmd="${tool_info#*:}"
@@ -661,13 +654,6 @@ for tool_info in \
         echo -e "  ${RED}✗${NC} ${tool}: not found"
     fi
 done
-
-# FastTree (has variant names)
-if has_cmd FastTree || has_cmd fasttree; then
-    echo -e "  ${GREEN}✓${NC} FastTree: available"
-else
-    echo -e "  ${RED}✗${NC} FastTree: not found"
-fi
 
 # PICRUSt2
 if has_cmd picrust2_pipeline.py; then
@@ -701,12 +687,10 @@ packages = {
     'numpy': 'NumPy',
     'scipy': 'SciPy',
     'skbio': 'scikit-bio',
-    'Bio': 'Biopython',
     'biom': 'biom-format',
     'statsmodels': 'statsmodels',
     'matplotlib': 'Matplotlib',
     'fpdf': 'FPDF2',
-    'aiofiles': 'aiofiles',
     'multipart': 'python-multipart',
 }
 for module, name in packages.items():
