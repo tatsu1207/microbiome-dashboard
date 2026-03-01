@@ -23,6 +23,8 @@ NC='\033[0m' # No Color
 # --- Counters ---
 INSTALLED_COUNT=0
 SKIPPED_COUNT=0
+FAILED_COUNT=0
+FAILED_COMPONENTS=()
 
 # --- Helper functions ---
 info()    { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -34,6 +36,57 @@ step()    { echo -e "\n${CYAN}━━━━━━━━━━━━━━━━�
             echo -e "${CYAN}  STEP $1: $2${NC}"; \
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; }
 installed() { ((INSTALLED_COUNT++)) || true; }
+failed() { ((FAILED_COUNT++)) || true; FAILED_COMPONENTS+=("$1"); warn "Failed to install $1."; }
+
+# Remove stale R library lock files that block subsequent installs
+clean_r_locks() {
+    if [[ -n "${ENV_PREFIX:-}" ]] && ls "${ENV_PREFIX}/lib/R/library"/00LOCK-* &>/dev/null; then
+        rm -rf "${ENV_PREFIX}/lib/R/library"/00LOCK-*
+    fi
+}
+
+# Run a command while printing dots every 5 seconds to show it's still alive.
+# Usage: run_with_dots "label" command arg1 arg2 ...
+# The command's stdout/stderr are captured in RWD_OUTPUT. Exit code in RWD_EXIT.
+RWD_OUTPUT=""
+RWD_EXIT=0
+run_with_dots() {
+    local label="$1"; shift
+    local logfile
+    logfile=$(mktemp /tmp/rwd_XXXXXX.log)
+
+    # Run command in background, capturing output
+    "$@" > "${logfile}" 2>&1 &
+    local cmd_pid=$!
+
+    # Print dots while waiting
+    echo -n "  ${label} "
+    while kill -0 "${cmd_pid}" 2>/dev/null; do
+        echo -n "."
+        sleep 5
+    done
+
+    # Capture exit code without letting set -e abort the script
+    RWD_EXIT=0
+    wait "${cmd_pid}" || RWD_EXIT=$?
+    RWD_OUTPUT=$(cat "${logfile}" 2>/dev/null || echo "")
+    rm -f "${logfile}"
+    echo ""  # newline after dots
+}
+
+# --- Cleanup trap for unexpected exits ---
+cleanup_on_error() {
+    local exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+        echo ""
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${RED}  Setup exited unexpectedly (exit code ${exit_code}).${NC}"
+        echo -e "${RED}  The installation is incomplete. Re-run ./setup_ubuntu.sh${NC}"
+        echo -e "${RED}  to resume — already-installed components will be skipped.${NC}"
+        echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    fi
+}
+trap cleanup_on_error EXIT
 
 # Check if a command exists anywhere in PATH
 has_cmd() { command -v "$1" &> /dev/null; }
@@ -69,9 +122,40 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 
 # ============================================================================
-# STEP 0: Verify Conda is available
+# STEP 0a: Install system dependencies
 # ============================================================================
-step "0" "Checking Conda installation"
+step "0a" "Checking system libraries (needed for R package compilation)"
+
+# These are required to compile dada2 (Rhtslib), curl/RCurl, openssl, xml2, and png from source.
+SYS_DEPS=(libbz2-dev liblzma-dev libcurl4-openssl-dev zlib1g-dev libssl-dev libxml2-dev libpng-dev)
+SYS_MISSING=()
+
+for dep in "${SYS_DEPS[@]}"; do
+    if dpkg -s "${dep}" &>/dev/null; then
+        skip "System lib: ${dep}"
+    else
+        SYS_MISSING+=("${dep}")
+    fi
+done
+
+if [ ${#SYS_MISSING[@]} -gt 0 ]; then
+    info "Installing missing system libraries: ${SYS_MISSING[*]}"
+    info "This requires sudo — you may be prompted for your password."
+    if sudo apt-get install -y "${SYS_MISSING[@]}" 2>&1 | tail -5; then
+        success "System libraries installed."
+        installed
+    else
+        warn "Could not install system libraries. R packages that compile from source may fail."
+        warn "Try manually: sudo apt-get install -y ${SYS_MISSING[*]}"
+    fi
+else
+    info "All system libraries already present."
+fi
+
+# ============================================================================
+# STEP 0b: Verify Conda is available
+# ============================================================================
+step "0b" "Checking Conda installation"
 
 MINIFORGE_DIR="${HOME}/miniforge3"
 MINIFORGE_INSTALLER="Miniforge3-Linux-$(uname -m).sh"
@@ -142,13 +226,17 @@ if conda env list | grep -q "^${ENV_NAME} "; then
     info "To recreate from scratch, run: conda env remove -n ${ENV_NAME} && ./setup_ubuntu.sh"
 else
     info "Creating environment with Python ${PYTHON_VERSION} and R ${R_VERSION}..."
-    ${SOLVER} create -n "${ENV_NAME}" python=${PYTHON_VERSION} r-base=${R_VERSION} -y
+    if ! ${SOLVER} create -n "${ENV_NAME}" python=${PYTHON_VERSION} r-base=${R_VERSION} -y; then
+        error "Failed to create conda environment '${ENV_NAME}'. Check disk space and network connectivity."
+    fi
     success "Environment '${ENV_NAME}' created."
     installed
 fi
 
 # Activate environment
-conda activate "${ENV_NAME}"
+if ! conda activate "${ENV_NAME}" 2>/dev/null; then
+    error "Failed to activate conda environment '${ENV_NAME}'. Try: conda env remove -n ${ENV_NAME} && ./setup_ubuntu.sh"
+fi
 success "Activated environment: ${ENV_NAME}"
 
 # Pin r-base to prevent accidental upgrades that break Bioconductor packages
@@ -158,6 +246,36 @@ if ! grep -q "r-base" "${PINNED_FILE}" 2>/dev/null; then
     mkdir -p "${ENV_PREFIX}/conda-meta"
     echo "r-base ${R_VERSION}.*" >> "${PINNED_FILE}"
     success "Pinned r-base to ${R_VERSION}.* (prevents upgrade breaking Bioconductor)"
+fi
+
+# ============================================================================
+# STEP 2b: Install C libraries inside conda env (needed by conda's GCC)
+# ============================================================================
+step "2b" "Checking C libraries in conda environment"
+
+# Conda's R uses its own GCC which only searches conda lib paths, not system paths.
+# These must be in the conda env for R packages to compile from source.
+# Also includes R packages with C bindings (r-curl) that are hard to compile from source.
+CONDA_CLIBS=(zlib libpng bzip2 xz openssl libcurl hdf5 glpk gmp r-curl r-ragg r-cairo r-microbenchmark)
+CONDA_CLIBS_MISSING=()
+for lib in "${CONDA_CLIBS[@]}"; do
+    if ${SOLVER} list -n "${ENV_NAME}" "^${lib}$" 2>/dev/null | grep -q "${lib}"; then
+        skip "Conda lib: ${lib}"
+    else
+        CONDA_CLIBS_MISSING+=("${lib}")
+    fi
+done
+
+if [ ${#CONDA_CLIBS_MISSING[@]} -gt 0 ]; then
+    info "Installing C libraries in conda env: ${CONDA_CLIBS_MISSING[*]}"
+    for lib in "${CONDA_CLIBS_MISSING[@]}"; do
+        ${SOLVER} install -n "${ENV_NAME}" -c conda-forge "${lib}" -y 2>&1 | tail -3 || \
+            warn "Failed to install conda lib: ${lib}"
+    done
+    success "Conda C libraries installed."
+    installed
+else
+    info "All C libraries already present in conda env."
 fi
 
 # ============================================================================
@@ -196,13 +314,19 @@ for tool_pair in "${BIOTOOLS_MAP[@]}"; do
 done
 
 if [ ${#BIOTOOLS_TO_INSTALL[@]} -gt 0 ]; then
-    info "Installing missing tools: ${BIOTOOLS_TO_INSTALL[*]}"
-    ${SOLVER} install -n "${ENV_NAME}" -c bioconda -c conda-forge \
-        "${BIOTOOLS_TO_INSTALL[@]}" -y 2>&1 | tail -5 || warn "Some biotools may have failed to install."
+    info "Installing missing tools individually: ${BIOTOOLS_TO_INSTALL[*]}"
 
-    # Verify each newly-installed tool
     for pkg in "${BIOTOOLS_TO_INSTALL[@]}"; do
-        # Find matching commands from the map
+        info "Installing ${pkg} ..."
+        run_with_dots "conda: ${pkg}" \
+            ${SOLVER} install -n "${ENV_NAME}" -c bioconda -c conda-forge "${pkg}" -y
+        echo "${RWD_OUTPUT:-}" | tail -5 || true
+        if [[ ${RWD_EXIT} -ne 0 ]]; then
+            warn "Conda/Mamba failed for ${pkg}:"
+            echo "${RWD_OUTPUT:-}" | tail -20 || true
+        fi
+
+        # Verify the tool is actually available; fall back to pip if conda failed
         for tool_pair in "${BIOTOOLS_MAP[@]}"; do
             map_pkg="${tool_pair%%:*}"
             if [[ "${map_pkg}" == "${pkg}" ]]; then
@@ -219,7 +343,22 @@ if [ ${#BIOTOOLS_TO_INSTALL[@]} -gt 0 ]; then
                     success "Verified: ${pkg}"
                     installed
                 else
-                    warn "${pkg} was not installed successfully."
+                    # Fallback: try pip install (works for pure-Python tools like cutadapt)
+                    warn "Conda failed for ${pkg}, trying pip install as fallback..."
+                    pip install "${pkg}" 2>&1 | tail -5 || true
+                    # Re-check
+                    for cmd in "${CMD_ARRAY[@]}"; do
+                        if has_env_cmd "${cmd}"; then
+                            found=true
+                            break
+                        fi
+                    done
+                    if ${found}; then
+                        success "Verified (via pip): ${pkg}"
+                        installed
+                    else
+                        failed "CLI tool: ${pkg}"
+                    fi
                 fi
                 break
             fi
@@ -242,7 +381,10 @@ else
     info "Creating separate 'picrust2' environment..."
     info "PICRUSt2 requires its own environment to avoid dependency conflicts."
 
-    if ${SOLVER} create -n picrust2 -c bioconda -c conda-forge picrust2 -y 2>&1 | tail -5; then
+    run_with_dots "conda: picrust2" \
+        ${SOLVER} create -n picrust2 -c bioconda -c conda-forge picrust2 -y
+    echo "${RWD_OUTPUT:-}" | tail -5 || true
+    if [[ ${RWD_EXIT} -eq 0 ]]; then
         success "PICRUSt2 installed in separate 'picrust2' environment."
         installed
     else
@@ -252,187 +394,195 @@ else
 fi
 
 # ============================================================================
-# STEP 5: Install R packages
+# STEP 5: Install R packages (BiocManager/CRAN primary, conda not used)
 # ============================================================================
 step "5" "Checking R packages"
 
-# --- 5a-pre: Ensure BiocManager is installed and version-matched to R ---
-# Conda may ship a BiocManager pinned to an older Bioconductor release that
-# does not match the current R version, causing all BiocManager::install()
-# calls to fail.  Detect the correct version and upgrade if needed.
+# Ensure R can find packages in the conda env during byte-compilation.
+# Without this, R's findpack() fails for packages like igraph during lazy loading.
+R_LIB_DIR="${ENV_PREFIX}/lib/R/library"
+export R_LIBS_USER="${R_LIB_DIR}"
+export R_LIBS_SITE="${R_LIB_DIR}"
+
+# Clean up stale R lock files from previously interrupted installs
+if ls "${R_LIB_DIR}"/00LOCK-* &>/dev/null; then
+    info "Removing stale R lock files from previous interrupted installs..."
+    rm -rf "${R_LIB_DIR}"/00LOCK-*
+    success "Lock files cleaned up."
+fi
+
+# --- 5a: Ensure BiocManager is installed and version-matched to R ---
 info "Checking BiocManager version matches R..."
-Rscript -e "
-    if (!requireNamespace('BiocManager', quietly=TRUE))
-        install.packages('BiocManager', repos='https://cloud.r-project.org')
+BIOCMGR_SCRIPT=$(mktemp /tmp/biocmgr_XXXXXX.R)
+cat > "${BIOCMGR_SCRIPT}" << 'REOF'
+if (!requireNamespace('BiocManager', quietly=TRUE))
+    install.packages('BiocManager', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
 
-    tryCatch({
+tryCatch({
+    BiocManager::install(ask=FALSE, update=FALSE)
+    message(sprintf('BiocManager %s OK for %s', BiocManager::version(), R.version.string))
+}, error = function(e) {
+    message('BiocManager version mismatch detected, upgrading...')
+    m <- regmatches(e$message, regexpr("version = '[0-9.]+'", e$message))
+    if (length(m) > 0) {
+        ver <- gsub("version = '|'", '', m)
+        message(sprintf('Upgrading to Bioconductor %s', ver))
+        BiocManager::install(version=ver, ask=FALSE)
+    } else {
+        message('Could not auto-detect version, trying fresh BiocManager...')
+        install.packages('BiocManager', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
         BiocManager::install(ask=FALSE, update=FALSE)
-        message(sprintf('BiocManager %s OK for %s', BiocManager::version(), R.version.string))
-    }, error = function(e) {
-        message('BiocManager version mismatch detected, upgrading...')
-        m <- regmatches(e\$message, regexpr(\"version = '[0-9.]+'\", e\$message))
-        if (length(m) > 0) {
-            ver <- gsub(\"version = '|'\", '', m)
-            message(sprintf('Upgrading to Bioconductor %s', ver))
-            BiocManager::install(version=ver, ask=FALSE)
-        } else {
-            message('Could not auto-detect version, trying fresh BiocManager...')
-            install.packages('BiocManager', repos='https://cloud.r-project.org')
-            BiocManager::install(ask=FALSE, update=FALSE)
-        }
-        message(sprintf('BiocManager now at %s', BiocManager::version()))
-    })
-" 2>&1 | tail -5 || warn "BiocManager version check had issues (may be OK)."
+    }
+    message(sprintf('BiocManager now at %s', BiocManager::version()))
+})
+REOF
+run_with_dots "BiocManager check" Rscript "${BIOCMGR_SCRIPT}"
+echo "${RWD_OUTPUT:-}" | tail -5 || true
+rm -f "${BIOCMGR_SCRIPT}"
+if [[ ${RWD_EXIT} -ne 0 ]]; then
+    warn "BiocManager version check had issues (may be OK)."
+fi
 
-# --- 5a: Conda-installable R packages ---
-# Install one-by-one so a conflict in one package doesn't block the rest.
-# Each entry: "conda_package_name:r_namespace"
-# NOTE: r-nloptr, r-lme4, r-ggrepel, r-htmltools, r-rmarkdown are installed via
-# conda to avoid compilation failures (they need system libs like libnlopt-dev).
-# These are dependencies of ANCOMBC, Maaslin2, and LinDA.
-R_CONDA_MAP=(
-    "r-optparse:optparse"
-    "r-jsonlite:jsonlite"
-    "r-nloptr:nloptr"
-    "r-lme4:lme4"
-    "r-lmertest:lmerTest"
-    "r-htmltools:htmltools"
-    "r-rmarkdown:rmarkdown"
-    "r-ggrepel:ggrepel"
-    "r-desctools:DescTools"
-    "r-energy:energy"
-    "bioconductor-treesummarizedexperiment:TreeSummarizedExperiment"
-    "bioconductor-mia:mia"
-    "bioconductor-scater:scater"
-    "bioconductor-dada2:dada2"
-    "bioconductor-phyloseq:phyloseq"
+# Update CRAN packages that conda ships as outdated versions.
+# lifecycle >= 1.0.5 is required by treeio and many other modern R packages.
+info "Updating core R dependencies from CRAN..."
+run_with_dots "R: core deps" \
+    Rscript -e "install.packages(c('lifecycle', 'rlang', 'cli', 'vctrs', 'pillar'), repos='https://cloud.r-project.org', INSTALL_opts='--no-lock', Ncpus=4)"
+if [[ ${RWD_EXIT} -ne 0 ]]; then
+    warn "Some core R deps may not have updated (continuing anyway)."
+fi
+
+# --- 5b-pre: treeio (Bioc 3.18's treeio 1.26.0 uses tidytree::random_ref
+# which was removed from tidytree. Install latest from GitHub instead.) ---
+if has_r_pkg "treeio"; then
+    skip "R package: treeio"
+else
+    info "Installing treeio from GitHub (Bioc 3.18 version has a bug)..."
+    clean_r_locks
+    run_with_dots "R: treeio (GitHub)" \
+        Rscript -e "
+        if (!requireNamespace('remotes', quietly=TRUE))
+            install.packages('remotes', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
+        remotes::install_github('YuLab-SMU/treeio', upgrade='never', INSTALL_opts='--no-lock')
+    "
+    if has_r_pkg "treeio"; then
+        echo "${RWD_OUTPUT:-}" | tail -5 || true
+        success "R package installed: treeio (GitHub)"
+        installed
+    else
+        warn "Install output for treeio:"
+        echo "${RWD_OUTPUT:-}" | tail -30 || true
+        failed "R package: treeio"
+    fi
+fi
+
+# --- 5b-pre2: ggrepel (needs older version for R 4.3; required by scater) ---
+if has_r_pkg "ggrepel"; then
+    skip "R package: ggrepel"
+else
+    info "Installing ggrepel 0.9.6 (0.9.7 requires R >= 4.5)..."
+    clean_r_locks
+    run_with_dots "R: ggrepel" \
+        Rscript -e "install.packages('https://cran.r-project.org/src/contrib/Archive/ggrepel/ggrepel_0.9.6.tar.gz', repos=NULL, type='source', INSTALL_opts='--no-lock')"
+    if has_r_pkg "ggrepel"; then
+        success "R package installed: ggrepel 0.9.6"
+        installed
+    else
+        warn "Install output for ggrepel:"
+        echo "${RWD_OUTPUT:-}" | tail -20 || true
+        failed "R package: ggrepel"
+    fi
+fi
+
+# --- 5b: Install all R packages via BiocManager/CRAN ---
+# BiocManager::install() handles both CRAN and Bioconductor packages.
+# Packages are installed one-by-one to isolate failures.
+# --no-lock avoids 00LOCK directory issues in conda R environments.
+R_PACKAGES=(
+    # CRAN packages (directly used by R scripts)
+    optparse
+    jsonlite
+    vegan
+    # Bioconductor packages (directly used by R scripts)
+    dada2
+    phyloseq
+    # ANCOMBC dependency chain — installed individually before ANCOMBC so that
+    # one failure doesn't cascade and block the rest.
+    curl
+    httr
+    ggrastr
+    TreeSummarizedExperiment
+    scater
+    mia
+    ANCOMBC
+    ALDEx2
+    DESeq2
+    Maaslin2
 )
 
-for pair in "${R_CONDA_MAP[@]}"; do
-    conda_pkg="${pair%%:*}"
-    r_pkg="${pair##*:}"
-
+for r_pkg in "${R_PACKAGES[@]}"; do
     if has_r_pkg "${r_pkg}"; then
         skip "R package: ${r_pkg}"
     else
-        info "Installing ${conda_pkg} ..."
-        if ${SOLVER} install -n "${ENV_NAME}" -c bioconda -c conda-forge \
-                "${conda_pkg}" -y 2>&1 | tail -5; then
-            # Verify it actually installed
-            if has_r_pkg "${r_pkg}"; then
-                success "R package installed: ${r_pkg}"
-                installed
-            else
-                warn "Conda reported success but ${r_pkg} is not loadable in R."
-            fi
-        else
-            warn "Conda/Mamba could not install ${conda_pkg} (dependency conflict)."
-            warn "Trying install via R install.packages / BiocManager..."
-            # Fallback: install from R directly
-            if [[ "${conda_pkg}" == bioconductor-* ]]; then
-                Rscript -e "
-                    if (!requireNamespace('BiocManager', quietly=TRUE))
-                        install.packages('BiocManager', repos='https://cloud.r-project.org')
-                    BiocManager::install('${r_pkg}', ask=FALSE, update=FALSE)
-                " 2>&1 | tail -5 || true
-            else
-                Rscript -e "install.packages('${r_pkg}', repos='https://cloud.r-project.org')" 2>&1 | tail -5 || true
-            fi
+        info "Installing ${r_pkg} ..."
+        clean_r_locks
 
-            if has_r_pkg "${r_pkg}"; then
-                success "R package installed via fallback: ${r_pkg}"
-                installed
-            else
-                warn "Failed to install ${r_pkg}. You may need to install it manually."
+        # Try normal install first. Fall back to --no-lock on lock errors.
+        run_with_dots "R: ${r_pkg}" \
+            Rscript -e "
+            if (!requireNamespace('BiocManager', quietly=TRUE))
+                install.packages('BiocManager', repos='https://cloud.r-project.org')
+            BiocManager::install('${r_pkg}', ask=FALSE, update=FALSE)
+        "
+        if ! has_r_pkg "${r_pkg}"; then
+            # Check if it was a lock failure and retry with --no-lock
+            if echo "${RWD_OUTPUT:-}" | grep -q "failed to lock directory"; then
+                warn "Lock error detected, retrying ${r_pkg} with --no-lock..."
+                clean_r_locks
+                run_with_dots "R: ${r_pkg} (no-lock)" \
+                    Rscript -e "
+                    if (!requireNamespace('BiocManager', quietly=TRUE))
+                        install.packages('BiocManager', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
+                    BiocManager::install('${r_pkg}', ask=FALSE, update=FALSE, INSTALL_opts='--no-lock')
+                "
             fi
+        fi
+
+        if has_r_pkg "${r_pkg}"; then
+            echo "${RWD_OUTPUT:-}" | tail -5 || true
+            success "R package installed: ${r_pkg}"
+            installed
+        else
+            warn "Install output for ${r_pkg}:"
+            echo "${RWD_OUTPUT:-}" | tail -30 || true
+            failed "R package: ${r_pkg}"
         fi
     fi
 done
 
-# --- 5b: Bioconductor-only R packages (ANCOM-BC, ALDEx2) ---
-R_BIOC_NEEDED=()
-
-if has_r_pkg "ANCOMBC"; then
-    skip "R package: ANCOMBC"
-else
-    R_BIOC_NEEDED+=("ANCOMBC")
-fi
-
-if has_r_pkg "ALDEx2"; then
-    skip "R package: ALDEx2"
-else
-    R_BIOC_NEEDED+=("ALDEx2")
-fi
-
-if has_r_pkg "DESeq2"; then
-    skip "R package: DESeq2"
-else
-    R_BIOC_NEEDED+=("DESeq2")
-fi
-
-if has_r_pkg "Maaslin2"; then
-    skip "R package: Maaslin2"
-else
-    R_BIOC_NEEDED+=("Maaslin2")
-fi
-
-if [ ${#R_BIOC_NEEDED[@]} -gt 0 ]; then
-    info "Installing from Bioconductor: ${R_BIOC_NEEDED[*]}"
-    info "This may take 10-15 minutes on first install..."
-
-    # Install one-by-one to isolate failures
-    for bioc_pkg in "${R_BIOC_NEEDED[@]}"; do
-        info "Installing ${bioc_pkg} via BiocManager..."
-        Rscript -e "
-            if (!requireNamespace('BiocManager', quietly = TRUE))
-                install.packages('BiocManager', repos='https://cloud.r-project.org')
-            BiocManager::install('${bioc_pkg}', ask=FALSE, update=FALSE)
-        " 2>&1 | tail -10 || true
-
-        if has_r_pkg "${bioc_pkg}"; then
-            success "Bioconductor package installed: ${bioc_pkg}"
-            installed
-        else
-            warn "Failed to install ${bioc_pkg}. You may need to install it manually."
-        fi
-    done
-else
-    info "All Bioconductor R packages already present."
-fi
-
-# --- 5c: LinDA (GitHub-only R package) ---
+# --- 5d: LinDA (GitHub-only R package) ---
 if has_r_pkg "LinDA"; then
     skip "R package: LinDA"
 else
     info "Installing LinDA from GitHub..."
-    Rscript -e "
+    clean_r_locks
+    run_with_dots "GitHub: LinDA" \
+        Rscript -e "
+        if (!requireNamespace('BiocManager', quietly=TRUE))
+            install.packages('BiocManager', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
         if (!requireNamespace('remotes', quietly=TRUE))
-            install.packages('remotes', repos='https://cloud.r-project.org')
+            install.packages('remotes', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
         if (!requireNamespace('modeest', quietly=TRUE))
-            install.packages('modeest', repos='https://cloud.r-project.org')
-        remotes::install_github('zhouhj1994/LinDA', upgrade='never')
-    " 2>&1 | tail -10 || true
+            install.packages('modeest', repos='https://cloud.r-project.org', INSTALL_opts='--no-lock')
+        remotes::install_github('zhouhj1994/LinDA', upgrade='never', INSTALL_opts='--no-lock')
+    "
+    echo "${RWD_OUTPUT:-}" | tail -10 || true
 
     if has_r_pkg "LinDA"; then
         success "LinDA installed from GitHub."
         installed
     else
-        warn "Failed to install LinDA. You may need to install it manually."
-    fi
-fi
-
-# --- 5d: vegan (for NMDS ordination) ---
-if has_r_pkg "vegan"; then
-    skip "R package: vegan"
-else
-    info "Installing vegan..."
-    Rscript -e "install.packages('vegan', repos='https://cloud.r-project.org')" 2>&1 | tail -5 || true
-
-    if has_r_pkg "vegan"; then
-        success "R package installed: vegan"
-        installed
-    else
-        warn "Failed to install vegan."
+        failed "R package: LinDA"
     fi
 fi
 
@@ -475,21 +625,22 @@ for pair in "${PYTHON_PACKAGES[@]}"; do
 done
 
 if [ ${#PYTHON_MISSING[@]} -gt 0 ]; then
-    info "Installing missing Python packages: ${PYTHON_MISSING[*]}"
-    pip install "${PYTHON_MISSING[@]}" 2>&1 | tail -10 || warn "Some Python packages may have failed to install."
+    info "Installing missing Python packages individually: ${PYTHON_MISSING[*]}"
 
-    # Verify each newly-installed package
     for pip_name in "${PYTHON_MISSING[@]}"; do
         # Find matching module from the map
         for pair in "${PYTHON_PACKAGES[@]}"; do
             map_module="${pair%%:*}"
             map_pip="${pair##*:}"
             if [[ "${map_pip}" == "${pip_name}" ]]; then
+                info "Installing ${pip_name} ..."
+                pip install "${pip_name}" 2>&1 | tail -5 || true
+
                 if has_python_pkg "${map_module}"; then
                     success "Verified: ${pip_name}"
                     installed
                 else
-                    warn "${pip_name} was not installed successfully."
+                    failed "Python: ${pip_name}"
                 fi
                 break
             fi
@@ -561,16 +712,67 @@ step "8" "Checking SILVA 138.1 Reference Database"
 SILVA_TRAIN="${SILVA_DIR}/silva_nr99_v138.1_train_set.fa.gz"
 SILVA_SPECIES="${SILVA_DIR}/silva_species_assignment_v138.1.fa.gz"
 
+# Minimum expected file sizes (bytes) to detect truncated downloads
+SILVA_TRAIN_MIN_SIZE=20000000   # ~24 MB
+SILVA_SPECIES_MIN_SIZE=70000000 # ~77 MB
+
+# Helper: validate a downloaded file is not truncated
+validate_download() {
+    local file="$1" min_size="$2" label="$3"
+    if [[ ! -f "${file}" ]]; then
+        return 1
+    fi
+    local actual_size
+    actual_size=$(stat --printf="%s" "${file}" 2>/dev/null || stat -f "%z" "${file}" 2>/dev/null || echo 0)
+    if [[ ${actual_size} -lt ${min_size} ]]; then
+        warn "${label} appears truncated (${actual_size} bytes, expected >${min_size})."
+        warn "Removing corrupt file. Re-run setup to retry the download."
+        rm -f "${file}"
+        return 1
+    fi
+    return 0
+}
+
+# Helper: download a file with error handling (removes partial files on failure)
+download_file() {
+    local url="$1" dest="$2" label="$3"
+    local tmp_dest="${dest}.part"
+    local dl_ok=true
+    if has_cmd wget; then
+        wget -q --show-progress -O "${tmp_dest}" "${url}" || dl_ok=false
+    else
+        curl -fSL -o "${tmp_dest}" "${url}" || dl_ok=false
+    fi
+
+    if [[ "${dl_ok}" == "false" ]] || [[ ! -f "${tmp_dest}" ]]; then
+        rm -f "${tmp_dest}"
+        warn "${label} download failed. Re-run setup to retry."
+        return 1
+    fi
+
+    mv "${tmp_dest}" "${dest}"
+    return 0
+}
+
 SILVA_NEEDED=false
 
+# Check existing files and validate they are not truncated
 if [[ -f "${SILVA_TRAIN}" ]]; then
-    skip "SILVA training set"
+    if validate_download "${SILVA_TRAIN}" ${SILVA_TRAIN_MIN_SIZE} "SILVA training set"; then
+        skip "SILVA training set"
+    else
+        SILVA_NEEDED=true
+    fi
 else
     SILVA_NEEDED=true
 fi
 
 if [[ -f "${SILVA_SPECIES}" ]]; then
-    skip "SILVA species assignment"
+    if validate_download "${SILVA_SPECIES}" ${SILVA_SPECIES_MIN_SIZE} "SILVA species assignment"; then
+        skip "SILVA species assignment"
+    else
+        SILVA_NEEDED=true
+    fi
 else
     SILVA_NEEDED=true
 fi
@@ -579,38 +781,52 @@ if [[ "${SILVA_NEEDED}" == "true" ]]; then
     echo ""
     info "SILVA 138.1 is required for taxonomic assignment (~100 MB total)."
     read -p "  Download missing files now? (Y/n): " DOWNLOAD_SILVA || DOWNLOAD_SILVA="Y"
-    
+
     if [[ ! "${DOWNLOAD_SILVA}" =~ ^[Nn]$ ]]; then
         if ! has_cmd wget && ! has_cmd curl; then
             warn "Neither wget nor curl found. Skipping SILVA download."
             warn "Install wget (sudo apt install wget) and re-run setup."
         else
+            SILVA_OK=true
+
             if [[ ! -f "${SILVA_TRAIN}" ]]; then
                 info "Downloading SILVA training set (~24 MB)..."
-                if has_cmd wget; then
-                    wget -q --show-progress -O "${SILVA_TRAIN}" \
-                        "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz"
+                if download_file \
+                    "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz" \
+                    "${SILVA_TRAIN}" "SILVA training set"; then
+                    if validate_download "${SILVA_TRAIN}" ${SILVA_TRAIN_MIN_SIZE} "SILVA training set"; then
+                        installed
+                    else
+                        SILVA_OK=false
+                        failed "SILVA training set"
+                    fi
                 else
-                    curl -fSL -o "${SILVA_TRAIN}" \
-                        "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_train_set.fa.gz"
+                    SILVA_OK=false
+                    failed "SILVA training set"
                 fi
-                installed
             fi
 
             if [[ ! -f "${SILVA_SPECIES}" ]]; then
                 info "Downloading SILVA species assignment (~77 MB)..."
-                if has_cmd wget; then
-                    wget -q --show-progress -O "${SILVA_SPECIES}" \
-                        "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz"
+                if download_file \
+                    "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz" \
+                    "${SILVA_SPECIES}" "SILVA species assignment"; then
+                    if validate_download "${SILVA_SPECIES}" ${SILVA_SPECIES_MIN_SIZE} "SILVA species assignment"; then
+                        installed
+                    else
+                        SILVA_OK=false
+                        failed "SILVA species assignment"
+                    fi
                 else
-                    curl -fSL -o "${SILVA_SPECIES}" \
-                        "https://zenodo.org/record/4587955/files/silva_species_assignment_v138.1.fa.gz"
+                    SILVA_OK=false
+                    failed "SILVA species assignment"
                 fi
-                installed
+            fi
+
+            if [[ "${SILVA_OK}" == "true" ]]; then
+                success "SILVA 138.1 databases downloaded."
             fi
         fi
-        
-        success "SILVA 138.1 databases downloaded."
     else
         warn "Skipped SILVA download. You can download later — see README.md."
     fi
@@ -786,10 +1002,34 @@ Rscript -e '
 # ============================================================================
 echo ""
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "  Summary: ${GREEN}${INSTALLED_COUNT} newly installed${NC} | ${BLUE}${SKIPPED_COUNT} skipped (already present)${NC}"
+echo -e "  Summary: ${GREEN}${INSTALLED_COUNT} installed${NC} | ${BLUE}${SKIPPED_COUNT} skipped${NC} | ${RED}${FAILED_COUNT} failed${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-if [[ ${INSTALLED_COUNT} -eq 0 ]]; then
+if [[ ${FAILED_COUNT} -gt 0 ]]; then
+    echo ""
+    echo -e "${RED}  The following components failed to install:${NC}"
+    for comp in "${FAILED_COMPONENTS[@]}"; do
+        echo -e "    ${RED}✗${NC} ${comp}"
+    done
+    echo ""
+    warn "Some features may not work until these are resolved."
+    warn "You can re-run ./setup_ubuntu.sh to retry failed components."
+    echo ""
+    echo -e "${YELLOW}"
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║       ⚠️  Setup completed with errors                ║"
+    echo "  ╠══════════════════════════════════════════════════════╣"
+    echo "  ║                                                      ║"
+    echo "  ║  ${FAILED_COUNT} component(s) failed. See above for details.    ║"
+    echo "  ║  Re-run ./setup_ubuntu.sh to retry.                  ║"
+    echo "  ║                                                      ║"
+    echo "  ║  To start the app anyway:                            ║"
+    echo "  ║    conda activate ${ENV_NAME}                          ║"
+    echo "  ║    ./run.sh                                          ║"
+    echo "  ║                                                      ║"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo -e "${NC}"
+elif [[ ${INSTALLED_COUNT} -eq 0 ]]; then
     echo ""
     echo -e "${GREEN}"
     echo "  ╔══════════════════════════════════════════════════════╗"
