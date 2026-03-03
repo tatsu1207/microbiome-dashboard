@@ -54,6 +54,7 @@ class Upload(Base):
     total_files: Mapped[int | None] = mapped_column(Integer)
     total_size_mb: Mapped[float | None] = mapped_column(Float)
     primers_detected: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    platform: Mapped[str | None] = mapped_column(String)  # "illumina", "pacbio", "nanopore"
     study: Mapped[str | None] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="uploaded")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -162,6 +163,7 @@ class Dataset(Base):
     trunc_len_f: Mapped[int | None] = mapped_column(Integer)
     trunc_len_r: Mapped[int | None] = mapped_column(Integer)
     min_overlap: Mapped[int | None] = mapped_column(Integer)
+    platform: Mapped[str | None] = mapped_column(String)  # "illumina", "pacbio", "nanopore"
     custom_fwd_primer: Mapped[str | None] = mapped_column(String)
     custom_rev_primer: Mapped[str | None] = mapped_column(String)
     parent_dataset_ids: Mapped[str | None] = mapped_column(Text)

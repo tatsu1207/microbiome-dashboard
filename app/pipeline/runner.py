@@ -13,7 +13,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-from app.config import DADA2_DEFAULTS, DATASET_DIR, PICRUST2_RUNS_DIR
+from app.config import DADA2_DEFAULTS, DATASET_DIR, LONGREAD_DADA2_DEFAULTS, PICRUST2_RUNS_DIR
 
 # Active pipeline threads keyed by dataset_id (or "picrust2-{run_id}")
 _running_pipelines: dict[int | str, threading.Thread] = {}
@@ -268,6 +268,7 @@ def _reattach_pipeline(dataset_id: int, pid: int):
 
 
 STEPS = ["fastqc", "cutadapt", "dada2", "taxonomy"]
+STEPS_LONGREAD = ["fastqc", "dada2_longread", "taxonomy"]
 
 
 def launch_pipeline(
@@ -311,6 +312,7 @@ def launch_pipeline(
 
         seq_types = {u.sequencing_type for u in uploads if u.sequencing_type}
         regions = {u.variable_region for u in uploads if u.variable_region}
+        platforms = {u.platform for u in uploads if u.platform}
 
         sequencing_type = seq_types.pop() if len(seq_types) == 1 else (
             "mixed" if len(seq_types) > 1 else None
@@ -318,6 +320,7 @@ def launch_pipeline(
         variable_region = regions.pop() if len(regions) == 1 else (
             "mixed" if len(regions) > 1 else None
         )
+        platform = platforms.pop() if len(platforms) == 1 else None
 
         # Derive project_id from uploads if not provided
         if not project_id:
@@ -344,6 +347,7 @@ def launch_pipeline(
             status="pending",
             variable_region=variable_region,
             sequencing_type=sequencing_type,
+            platform=platform,
             trim_left_f=tlf,
             trim_left_r=tlr,
             trunc_len_f=trf,
@@ -787,6 +791,7 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
 
         seq_type = dataset.sequencing_type or "single-end"
         var_region = dataset.variable_region
+        platform = dataset.platform
         custom_fwd = dataset.custom_fwd_primer
         custom_rev = dataset.custom_rev_primer
 
@@ -803,7 +808,7 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
 
         logger.info(f"Pipeline started for dataset {dataset_id}")
         logger.info(f"  Files: {len(fastq_files)} from {len(uploads)} upload(s)")
-        logger.info(f"  Type: {seq_type}, Region: {var_region}, Threads: {threads}")
+        logger.info(f"  Type: {seq_type}, Region: {var_region}, Platform: {platform or 'illumina'}, Threads: {threads}")
         _update_status(output_dir, "fastqc", 0, completed_steps)
 
         # ── Step 1: FastQC ─────────────────────────────────────────────
@@ -816,74 +821,109 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
         qc_result = run_fastqc(fastq_dir, output_dir, logger)
         completed_steps.append("fastqc")
 
-        # ── Step 2: Cutadapt ───────────────────────────────────────────
+        # ── Branch: Long-read (PacBio) vs Short-read (Illumina) ──────
 
-        from app.pipeline.trim import run_cutadapt
+        if platform in ("pacbio", "nanopore"):
+            # Long-read branch: DADA2 with learned error model (no Cutadapt, no truncation)
+            from app.pipeline.dada2 import run_dada2_longread
+            from app.pipeline.detect import PRIMERS
 
-        _check_cancel(dataset_id)
-        _update_status(output_dir, "cutadapt", 20, completed_steps)
-        trim_result = run_cutadapt(
-            fastq_dir, output_dir, seq_type, var_region, logger, threads,
-            custom_fwd_primer=custom_fwd, custom_rev_primer=custom_rev,
-        )
-        trimmed_dir = Path(trim_result["trimmed_dir"])
-        completed_steps.append("cutadapt")
+            _check_cancel(dataset_id)
+            _update_status(output_dir, "dada2_longread", 25, completed_steps)
 
-        # ── Auto-detect truncation params if needed ──────────────────
+            # Get primers for full-length 16S
+            primer_region = var_region or "V1-V9"
+            primer_info = PRIMERS.get(primer_region, PRIMERS["V1-V9"])
+            fwd_primer = custom_fwd or primer_info["forward"]
+            rev_primer = custom_rev or primer_info["reverse"]
 
-        _check_cancel(dataset_id)
-
-        trunc_f = dataset.trunc_len_f
-        trunc_r = dataset.trunc_len_r
-
-        if trunc_f == 0 or trunc_r == 0:
-            from app.pipeline.quality import detect_truncation_params
-
-            auto = detect_truncation_params(
-                trimmed_dir=trimmed_dir,
-                sequencing_type=seq_type,
-                variable_region=var_region,
+            dada2_result = run_dada2_longread(
+                input_dir=fastq_dir,
+                output_dir=output_dir,
+                fwd_primer=fwd_primer,
+                rev_primer=rev_primer,
+                platform=platform,
+                threads=threads,
                 logger=logger,
-            )
-            if trunc_f == 0 and auto["trunc_len_f"]:
-                trunc_f = auto["trunc_len_f"]
-                dataset.trunc_len_f = trunc_f
-            if trunc_r == 0 and auto["trunc_len_r"]:
-                trunc_r = auto["trunc_len_r"]
-                dataset.trunc_len_r = trunc_r
-            db.commit()
-            logger.info(f"Auto-detected truncation: {auto['details']}")
-            _update_status(
-                output_dir, "dada2", 35, completed_steps,
-                auto_trunc_len_f=trunc_f,
-                auto_trunc_len_r=trunc_r,
-                auto_trunc_details=auto["details"],
+                proc_callback=lambda proc: (
+                    _register_proc(dataset_id, proc),
+                    _save_pid_to_status(DATASET_DIR / str(dataset_id) / "status.json", proc.pid),
+                ),
             )
 
-        # ── Step 3: DADA2 ──────────────────────────────────────────────
+            _check_cancel(dataset_id)
 
-        from app.pipeline.dada2 import run_dada2
+        else:
+            # Short-read branch: Cutadapt → auto-truncation → DADA2
 
-        _check_cancel(dataset_id)
-        _update_status(output_dir, "dada2", 40, completed_steps)
-        dada2_result = run_dada2(
-            input_dir=trimmed_dir,
-            output_dir=output_dir,
-            sequencing_type=seq_type,
-            trim_left_f=dataset.trim_left_f,
-            trim_left_r=dataset.trim_left_r,
-            trunc_len_f=trunc_f,
-            trunc_len_r=trunc_r,
-            min_overlap=dataset.min_overlap,
-            threads=threads,
-            logger=logger,
-            proc_callback=lambda proc: (
-                _register_proc(dataset_id, proc),
-                _save_pid_to_status(DATASET_DIR / str(dataset_id) / "status.json", proc.pid),
-            ),
-        )
+            # ── Step 2: Cutadapt ───────────────────────────────────────
 
-        _check_cancel(dataset_id)
+            from app.pipeline.trim import run_cutadapt
+
+            _check_cancel(dataset_id)
+            _update_status(output_dir, "cutadapt", 20, completed_steps)
+            trim_result = run_cutadapt(
+                fastq_dir, output_dir, seq_type, var_region, logger, threads,
+                custom_fwd_primer=custom_fwd, custom_rev_primer=custom_rev,
+            )
+            trimmed_dir = Path(trim_result["trimmed_dir"])
+            completed_steps.append("cutadapt")
+
+            # ── Auto-detect truncation params if needed ──────────────
+
+            _check_cancel(dataset_id)
+
+            trunc_f = dataset.trunc_len_f
+            trunc_r = dataset.trunc_len_r
+
+            if trunc_f == 0 or trunc_r == 0:
+                from app.pipeline.quality import detect_truncation_params
+
+                auto = detect_truncation_params(
+                    trimmed_dir=trimmed_dir,
+                    sequencing_type=seq_type,
+                    variable_region=var_region,
+                    logger=logger,
+                )
+                if trunc_f == 0 and auto["trunc_len_f"]:
+                    trunc_f = auto["trunc_len_f"]
+                    dataset.trunc_len_f = trunc_f
+                if trunc_r == 0 and auto["trunc_len_r"]:
+                    trunc_r = auto["trunc_len_r"]
+                    dataset.trunc_len_r = trunc_r
+                db.commit()
+                logger.info(f"Auto-detected truncation: {auto['details']}")
+                _update_status(
+                    output_dir, "dada2", 35, completed_steps,
+                    auto_trunc_len_f=trunc_f,
+                    auto_trunc_len_r=trunc_r,
+                    auto_trunc_details=auto["details"],
+                )
+
+            # ── Step 3: DADA2 ──────────────────────────────────────────
+
+            from app.pipeline.dada2 import run_dada2
+
+            _check_cancel(dataset_id)
+            _update_status(output_dir, "dada2", 40, completed_steps)
+            dada2_result = run_dada2(
+                input_dir=trimmed_dir,
+                output_dir=output_dir,
+                sequencing_type=seq_type,
+                trim_left_f=dataset.trim_left_f,
+                trim_left_r=dataset.trim_left_r,
+                trunc_len_f=trunc_f,
+                trunc_len_r=trunc_r,
+                min_overlap=dataset.min_overlap,
+                threads=threads,
+                logger=logger,
+                proc_callback=lambda proc: (
+                    _register_proc(dataset_id, proc),
+                    _save_pid_to_status(DATASET_DIR / str(dataset_id) / "status.json", proc.pid),
+                ),
+            )
+
+            _check_cancel(dataset_id)
 
         # Generate rep_seqs.fasta from the ASV table (sequences are in the TSV)
         asv_tsv = Path(dada2_result["asv_table_path"])
@@ -918,7 +958,7 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
             _store_qc_metrics(db, dataset_id, qc_result["sample_metrics"])
 
         db.commit()
-        completed_steps.append("dada2")
+        completed_steps.append("dada2_longread" if platform in ("pacbio", "nanopore") else "dada2")
 
         # ── Step 4: Taxonomy Assignment ───────────────────────────────
 

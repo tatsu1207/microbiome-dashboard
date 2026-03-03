@@ -110,8 +110,8 @@ layout = dbc.Container([
     dbc.Alert([
         html.Strong("Supported input: "),
         "Illumina paired-end or single-end amplicon FASTQ files targeting specific "
-        "16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S "
-        "long reads (PacBio, Nanopore) are not supported.",
+        "16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). "
+        "Full-length 16S long reads (PacBio HiFi, Nanopore) also supported (auto-detected).",
     ], color="info", className="mb-3"),
 
     dbc.Row([

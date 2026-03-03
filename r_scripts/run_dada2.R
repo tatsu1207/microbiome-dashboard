@@ -18,13 +18,21 @@ suppressPackageStartupMessages({
 option_list <- list(
   make_option("--input_dir",   type="character", help="Directory with FASTQ files"),
   make_option("--output_dir",  type="character", help="Output directory"),
-  make_option("--mode",        type="character", default="paired", help="paired or single"),
+  make_option("--mode",        type="character", default="paired", help="paired, single, or longread"),
   make_option("--trim_left_f", type="integer",   default=0,   help="Trim N bases from 5' of forward reads"),
   make_option("--trim_left_r", type="integer",   default=0,   help="Trim N bases from 5' of reverse reads"),
   make_option("--trunc_len_f", type="integer",   default=0,   help="Truncate forward reads (0=no truncation)"),
   make_option("--trunc_len_r", type="integer",   default=0,   help="Truncate reverse reads (0=no truncation)"),
   make_option("--min_overlap", type="integer",   default=12,  help="Min overlap for merging (PE only)"),
-  make_option("--threads",     type="integer",   default=1,   help="Number of threads")
+  make_option("--threads",     type="integer",   default=1,   help="Number of threads"),
+  # Long-read options
+  make_option("--fwd_primer",  type="character", default=NULL, help="Forward primer sequence (longread mode)"),
+  make_option("--rev_primer",  type="character", default=NULL, help="Reverse primer sequence (longread mode)"),
+  make_option("--min_len",     type="integer",   default=1000, help="Min read length after filtering (longread)"),
+  make_option("--max_len",     type="integer",   default=1600, help="Max read length after filtering (longread)"),
+  make_option("--max_ee",      type="integer",   default=10,   help="Max expected errors (longread)"),
+  make_option("--band_size",   type="integer",   default=32,   help="DADA2 BAND_SIZE (longread)"),
+  make_option("--platform",    type="character", default="pacbio", help="Platform: pacbio or nanopore (longread)")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
@@ -33,9 +41,193 @@ if (is.null(opt$input_dir) || is.null(opt$output_dir)) {
   stop("--input_dir and --output_dir are required")
 }
 
+is_longread <- (opt$mode == "longread")
 is_paired <- (opt$mode == "paired")
 
-# ── Main Pipeline ─────────────────────────────────────────────────────────────
+# ── Long-Read Pipeline (PacBio HiFi) ─────────────────────────────────────────
+
+if (is_longread) {
+tryCatch({
+
+  dir.create(opt$output_dir, recursive=TRUE, showWarnings=FALSE)
+
+  # Discover FASTQ files (all files in input directory, single-end only)
+  fnFs <- sort(list.files(opt$input_dir, pattern="\\.(fastq|fq)(\\.gz)?$", full.names=TRUE))
+  if (length(fnFs) == 0) stop("No FASTQ files found")
+  sample.names <- sub("\\.(fastq|fq)(\\.gz)?$", "", basename(fnFs))
+  sample.names <- sub("_R1[_.]?.*$|_1$", "", sample.names)
+  cat("Found", length(fnFs), "long-read samples\n")
+
+  use_mt <- ifelse(opt$threads > 1, opt$threads, FALSE)
+
+  # ── Step 1: Remove Primers ──────────────────────────────────────────────
+
+  if (!is.null(opt$fwd_primer) && !is.null(opt$rev_primer)) {
+    cat("Removing primers (orient=TRUE)...\n")
+    cat("  Forward:", opt$fwd_primer, "\n")
+    cat("  Reverse:", opt$rev_primer, "\n")
+
+    nop_dir <- file.path(opt$output_dir, "noprimers")
+    dir.create(nop_dir, recursive=TRUE, showWarnings=FALSE)
+    nopFs <- file.path(nop_dir, basename(fnFs))
+
+    prim_out <- removePrimers(fnFs, nopFs,
+                              primer.fwd=opt$fwd_primer,
+                              primer.rev=dada2:::rc(opt$rev_primer),
+                              orient=TRUE,
+                              verbose=TRUE)
+
+    # Track how many reads had primers removed
+    prim_reads_in  <- prim_out[, "reads.in"]
+    prim_reads_out <- prim_out[, "reads.out"]
+
+    # Keep only samples with reads passing
+    keep_prim <- prim_reads_out > 0
+    if (sum(keep_prim) == 0) stop("No reads had primers removed for any sample")
+    cat(sum(keep_prim), "of", length(keep_prim), "samples had primers removed\n")
+
+    fnFs <- nopFs[keep_prim]
+    sample.names <- sample.names[keep_prim]
+    prim_reads_in  <- prim_reads_in[keep_prim]
+    prim_reads_out <- prim_reads_out[keep_prim]
+  } else {
+    cat("No primers specified, skipping primer removal\n")
+    prim_reads_in  <- NULL
+    prim_reads_out <- NULL
+  }
+
+  # ── Step 2: Filter and Trim (length filtering, no truncation) ──────────
+
+  filt_dir <- file.path(opt$output_dir, "filtered")
+  dir.create(filt_dir, recursive=TRUE, showWarnings=FALSE)
+  filtFs <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
+
+  cat("Filtering (minLen=", opt$min_len, ", maxLen=", opt$max_len,
+      ", maxEE=", opt$max_ee, ")...\n", sep="")
+  filt_out <- filterAndTrim(
+    fnFs, filtFs,
+    minLen=opt$min_len, maxLen=opt$max_len,
+    maxN=0, maxEE=opt$max_ee,
+    rm.phix=FALSE, compress=TRUE,
+    multithread=use_mt
+  )
+
+  keep <- filt_out[, "reads.out"] > 0
+  if (sum(keep) == 0) stop("No reads passed filtering for any sample")
+  cat(sum(keep), "of", length(keep), "samples passed filtering\n")
+
+  sample.names <- sample.names[keep]
+  filtFs <- filtFs[keep]
+  if (!is.null(prim_reads_in)) {
+    prim_reads_in  <- prim_reads_in[keep]
+    prim_reads_out <- prim_reads_out[keep]
+  }
+
+  # ── Step 3: Learn Error Rates (PacBio error model) ─────────────────────
+
+  if (opt$platform == "pacbio") {
+    cat("Learning error rates (PacBioErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
+    errF <- learnErrors(filtFs, errorEstimationFunction=PacBioErrfun,
+                         BAND_SIZE=opt$band_size,
+                         multithread=use_mt)
+  } else {
+    cat("Learning error rates (loessErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
+    errF <- learnErrors(filtFs, errorEstimationFunction=loessErrfun,
+                         BAND_SIZE=opt$band_size,
+                         multithread=use_mt)
+  }
+
+  # ── Step 4: Dereplicate + Denoise ──────────────────────────────────────
+
+  cat("Dereplicating...\n")
+  derep <- derepFastq(filtFs)
+  names(derep) <- sample.names
+
+  cat("Denoising (BAND_SIZE=", opt$band_size, ", HOMOPOLYMER_GAP_PENALTY=-1)...\n", sep="")
+  dadaFs <- dada(derep, err=errF, multithread=use_mt,
+                  BAND_SIZE=opt$band_size,
+                  HOMOPOLYMER_GAP_PENALTY=-1)
+
+  # ── Step 5: Sequence Table + Chimera Removal ───────────────────────────
+
+  seqtab <- makeSequenceTable(dadaFs)
+  cat("Sequence table:", nrow(seqtab), "samples,", ncol(seqtab), "ASVs\n")
+
+  cat("Removing chimeras...\n")
+  seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus",
+                                       multithread=use_mt)
+
+  asv_count <- ncol(seqtab.nochim)
+  sample_count <- nrow(seqtab.nochim)
+  cat("After chimera removal:", sample_count, "samples,", asv_count, "ASVs\n")
+
+  if (asv_count == 0) stop("No ASVs survived chimera removal")
+
+  # ── Build Read Tracking Table ──────────────────────────────────────────
+
+  if (length(sample.names) == 1) {
+    dadaFs <- list(dadaFs)
+  }
+
+  get_n <- function(x) sum(getUniques(x))
+
+  if (!is.null(prim_reads_in)) {
+    track <- cbind(
+      input=prim_reads_in,
+      primers_removed=prim_reads_out,
+      filtered=filt_out[keep, "reads.out"],
+      denoised=sapply(dadaFs, get_n),
+      nonchim=rowSums(seqtab.nochim)
+    )
+  } else {
+    track <- cbind(
+      input=filt_out[keep, "reads.in"],
+      filtered=filt_out[keep, "reads.out"],
+      denoised=sapply(dadaFs, get_n),
+      nonchim=rowSums(seqtab.nochim)
+    )
+  }
+  rownames(track) <- sample.names
+
+  # ── Write Outputs ──────────────────────────────────────────────────────
+
+  asv_ids <- paste0("ASV_", seq_len(asv_count))
+  seqs <- colnames(seqtab.nochim)
+
+  asv_table <- as.data.frame(t(seqtab.nochim))
+  colnames(asv_table) <- sample.names
+  asv_table <- cbind(ASV_ID = asv_ids, sequence = seqs, asv_table)
+
+  asv_path <- file.path(opt$output_dir, "asv_table.tsv")
+  write.table(asv_table, asv_path, sep="\t", row.names=FALSE, quote=FALSE)
+  cat("Wrote:", asv_path, "\n")
+
+  track_path <- file.path(opt$output_dir, "track_reads.tsv")
+  track_df <- cbind(sample = rownames(track), as.data.frame(track))
+  write.table(track_df, track_path, sep="\t", row.names=FALSE, quote=FALSE)
+  cat("Wrote:", track_path, "\n")
+
+  # ── Success ────────────────────────────────────────────────────────────
+
+  status <- toJSON(list(
+    status       = "success",
+    asv_count    = asv_count,
+    sample_count = sample_count
+  ), auto_unbox=TRUE)
+  cat("\n", status, "\n", sep="")
+  quit(status=0)
+
+}, error = function(e) {
+  status <- toJSON(list(
+    status  = "error",
+    message = conditionMessage(e)
+  ), auto_unbox=TRUE)
+  cat("\n", status, "\n", sep="")
+  quit(status=1)
+})
+}
+
+# ── Short-Read Pipeline (Illumina PE/SE) ──────────────────────────────────────
 
 tryCatch({
 

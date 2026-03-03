@@ -2,7 +2,7 @@
 
 A web-based tool for processing, managing, and visualizing 16S rRNA amplicon sequencing data. Built with Plotly Dash + FastAPI + SQLite.
 
-**Supported input**: Illumina paired-end or single-end amplicon FASTQ files targeting specific 16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S long reads (PacBio, Nanopore) are not supported — the pipeline's primer detection, quality profiling, and DADA2 error model are designed for short-read amplicon sequencing.
+**Supported input**: Illumina paired-end or single-end amplicon FASTQ files targeting specific 16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S long reads (PacBio HiFi, Nanopore) are also supported — auto-detected at upload, processed with DADA2 using platform-appropriate error models.
 
 **Three integrated tools:**
 

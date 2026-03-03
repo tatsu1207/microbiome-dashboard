@@ -72,6 +72,8 @@ def _migrate_add_columns():
         ("uploads", "primers_detected", "BOOLEAN"),
         ("datasets", "custom_fwd_primer", "TEXT"),
         ("datasets", "custom_rev_primer", "TEXT"),
+        ("uploads", "platform", "TEXT"),
+        ("datasets", "platform", "TEXT"),
     ]
     for table, col, col_type in migrations:
         try:

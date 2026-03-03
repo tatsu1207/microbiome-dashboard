@@ -32,6 +32,7 @@ def detect_truncation_params(
     primer_offset_f: int = 0,
     primer_offset_r: int = 0,
     logger: logging.Logger | None = None,
+    platform: str | None = None,
     **_kwargs,
 ) -> dict:
     """Auto-detect optimal DADA2 truncation lengths.
@@ -48,6 +49,11 @@ def detect_truncation_params(
     Returns dict with: trunc_len_f, trunc_len_r, details (str)
     """
     log = logger or logging.getLogger(__name__)
+
+    # Long-read platforms don't use truncation (they use length filtering instead)
+    if platform in ("pacbio", "nanopore"):
+        log.info(f"Skipping truncation detection for {platform} long-read data")
+        return {"trunc_len_f": 0, "trunc_len_r": 0, "details": f"Not applicable for {platform}"}
 
     # Find FASTQ files
     all_fastq = sorted(trimmed_dir.glob("*.fastq.gz")) + sorted(

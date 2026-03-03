@@ -19,6 +19,7 @@ from app.pipeline.detect import (
     PRIMERS,
     _primer_matches,
     _read_fastq_sequences,
+    detect_platform,
     detect_sequencing_type,
     detect_variable_region,
     extract_sample_name,
@@ -625,6 +626,21 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
         except Exception:
             pass
 
+    # Detect platform (Illumina / PacBio / Nanopore)
+    platform = None
+    if r1_name:
+        try:
+            platform_result = detect_platform(UPLOAD_DIR / r1_name)
+            platform = platform_result["platform"]
+        except Exception:
+            pass
+
+    # For long-read data, force region to V1-V9
+    if platform in ("pacbio", "nanopore"):
+        variable_region = "V1-V9"
+        # Override sequencing type to single-end for long reads
+        detection["type"] = "single-end"
+
     # Detect primer presence (check if reads start with expected forward primer)
     primers_detected = None
     if variable_region and r1_name:
@@ -644,6 +660,7 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
             upload_dir=str(UPLOAD_DIR),
             sequencing_type=detection["type"],
             variable_region=variable_region,
+            platform=platform,
             primers_detected=primers_detected,
             study=(study_name or "").strip() or None,
             total_files=len(saved_filenames),
@@ -688,6 +705,7 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
 
     # Build success message
     region_str = f", region: {variable_region}" if variable_region else ""
+    platform_str = f", platform: {platform}" if platform and platform != "illumina" else ""
     if primers_detected is True:
         primer_str = ", primers: detected"
     elif primers_detected is False:
@@ -696,7 +714,7 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
         primer_str = ""
     msg = (
         f"Registered {len(saved_filenames)} files "
-        f"({_human_size(total_size)}), {detection['type']}{region_str}{primer_str}"
+        f"({_human_size(total_size)}), {detection['type']}{region_str}{platform_str}{primer_str}"
     )
     warnings = detection.get("errors", [])
     alert_children = [html.P(msg, className="mb-0")]

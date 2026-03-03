@@ -67,3 +67,11 @@ DADA2_DEFAULTS = {
     "min_overlap": 12,
     "threads": min(32, max(1, os.cpu_count() - 1)),  # Cap at 32, leave 1 core free
 }
+
+LONGREAD_DADA2_DEFAULTS = {
+    "min_len": 1000,
+    "max_len": 1600,
+    "max_ee": 10,
+    "band_size": 32,
+    "threads": min(32, max(1, os.cpu_count() - 1)),
+}

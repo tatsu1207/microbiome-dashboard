@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.config import DADA2_ENV_NAME, R_SCRIPTS_DIR, conda_cmd
+from app.config import DADA2_ENV_NAME, LONGREAD_DADA2_DEFAULTS, R_SCRIPTS_DIR, conda_cmd
 
 
 def run_dada2(
@@ -103,6 +103,111 @@ def run_dada2(
     sample_count = r_status.get("sample_count", len(track_reads))
 
     logger.info(f"DADA2 complete: {sample_count} samples, {asv_count} ASVs")
+
+    return {
+        "success": True,
+        "asv_table_path": str(asv_table_path),
+        "track_reads_path": str(track_reads_path),
+        "asv_count": asv_count,
+        "sample_count": sample_count,
+        "track_reads": track_reads,
+    }
+
+
+def run_dada2_longread(
+    input_dir: Path,
+    output_dir: Path,
+    fwd_primer: str,
+    rev_primer: str,
+    platform: str = "pacbio",
+    min_len: int | None = None,
+    max_len: int | None = None,
+    max_ee: int | None = None,
+    band_size: int | None = None,
+    threads: int | None = None,
+    logger: logging.Logger | None = None,
+    proc_callback: Callable[[subprocess.Popen], None] | None = None,
+) -> dict:
+    """Run DADA2 long-read denoising via the R script.
+
+    Uses PacBioErrfun for PacBio HiFi, loessErrfun for Nanopore.
+
+    Returns:
+        dict with: success, asv_table_path, track_reads_path,
+                   asv_count, sample_count, track_reads (per-sample dict)
+    """
+    logger = logger or logging.getLogger(__name__)
+
+    dada2_dir = output_dir / "dada2"
+    dada2_dir.mkdir(parents=True, exist_ok=True)
+
+    defaults = LONGREAD_DADA2_DEFAULTS
+    cmd = conda_cmd([
+        "Rscript", str(R_SCRIPTS_DIR / "run_dada2.R"),
+        "--input_dir", str(input_dir),
+        "--output_dir", str(dada2_dir),
+        "--mode", "longread",
+        "--platform", platform,
+        "--fwd_primer", fwd_primer,
+        "--rev_primer", rev_primer,
+        "--min_len", str(min_len or defaults["min_len"]),
+        "--max_len", str(max_len or defaults["max_len"]),
+        "--max_ee", str(max_ee or defaults["max_ee"]),
+        "--band_size", str(band_size or defaults["band_size"]),
+        "--threads", str(threads or defaults["threads"]),
+    ], env_name=DADA2_ENV_NAME)
+
+    logger.info(f"Running DADA2 (long-read / {platform} mode)...")
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        start_new_session=True,
+    )
+    if proc_callback:
+        proc_callback(proc)
+
+    last_line = ""
+    for line in proc.stdout:
+        stripped = line.rstrip()
+        if stripped:
+            logger.info(f"[DADA2-LR] {stripped}")
+            last_line = stripped
+
+    proc.wait()
+
+    if proc.returncode != 0:
+        raise RuntimeError(f"DADA2 long-read R script failed (exit code {proc.returncode})")
+
+    r_status = {}
+    try:
+        r_status = json.loads(last_line)
+    except json.JSONDecodeError:
+        logger.warning(f"Could not parse DADA2 JSON status: {last_line}")
+
+    if r_status.get("status") == "error":
+        raise RuntimeError(f"DADA2 error: {r_status.get('message', 'unknown')}")
+
+    asv_table_path = dada2_dir / "asv_table.tsv"
+    track_reads_path = dada2_dir / "track_reads.tsv"
+
+    for p in [asv_table_path, track_reads_path]:
+        if not p.exists():
+            raise FileNotFoundError(f"Expected DADA2 output not found: {p}")
+
+    track_df = pd.read_csv(track_reads_path, sep="\t")
+    track_reads = {}
+    for _, row in track_df.iterrows():
+        track_reads[row["sample"]] = {
+            "input": int(row.get("input", 0)),
+            "filtered": int(row.get("filtered", 0)),
+            "denoised": int(row.get("denoised", 0)),
+            "nonchim": int(row.get("nonchim", 0)),
+        }
+
+    asv_count = r_status.get("asv_count", 0)
+    sample_count = r_status.get("sample_count", len(track_reads))
+
+    logger.info(f"DADA2 long-read complete: {sample_count} samples, {asv_count} ASVs")
 
     return {
         "success": True,

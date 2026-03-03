@@ -155,8 +155,8 @@ PRIMERS = {
         "expected_len": (280, 350),
     },
     "V1-V9": {
-        "forward": "AGAGTTTGATCMTGGCTCAG",    # 27F
-        "reverse": "TACGGYTACCTTGTTACGACTT",    # 1492R
+        "forward": "AGRGTTYGATYMTGGCTCAG",    # 27F (degenerate)
+        "reverse": "RGYTACCTTGTTACGACTT",      # 1492R (degenerate)
         "expected_len": (1400, 1500),
     },
 }
@@ -267,6 +267,7 @@ _REGION_COORDS = {
     "V4":    (515, 806),
     "V4-V5": (515, 926),
     "V5-V6": (784, 1061),
+    "V1-V9": (69, 1492),
 }
 
 
@@ -433,4 +434,82 @@ def _coords_to_region(positions: list[tuple[int, int]]) -> dict:
             f"Reads align to E. coli 16S positions {median_start}-{median_end}, "
             f"but no clear variable region match."
         ),
+    }
+
+
+# ── Platform detection (Illumina / PacBio / Nanopore) ─────────────────────────
+
+
+def _read_fastq_qualities(fastq_path: Path, n_reads: int = 500) -> list[list[int]]:
+    """Read Phred+33 quality scores from the first n_reads of a FASTQ(.gz) file."""
+    qualities = []
+    opener = gzip.open if str(fastq_path).endswith(".gz") else open
+    try:
+        with opener(fastq_path, "rt") as f:
+            line_num = 0
+            for line in f:
+                line_num += 1
+                if line_num % 4 == 0:  # Quality line
+                    qualities.append([ord(c) - 33 for c in line.strip()])
+                    if len(qualities) >= n_reads:
+                        break
+    except Exception:
+        pass
+    return qualities
+
+
+def detect_platform(fastq_path: Path, n_reads: int = 500) -> dict:
+    """Detect sequencing platform from read lengths and quality scores.
+
+    Returns:
+        dict with keys:
+            platform: "illumina" | "pacbio" | "nanopore"
+            median_len: int
+            median_qual: float
+            details: str
+    """
+    sequences = _read_fastq_sequences(fastq_path, n_reads)
+    qualities = _read_fastq_qualities(fastq_path, n_reads)
+
+    if not sequences:
+        return {
+            "platform": "illumina",
+            "median_len": 0,
+            "median_qual": 0.0,
+            "details": "Could not read sequences; defaulting to Illumina.",
+        }
+
+    lengths = sorted(len(s) for s in sequences)
+    median_len = lengths[len(lengths) // 2]
+
+    # Compute median per-read mean quality
+    if qualities:
+        mean_quals = sorted(sum(q) / len(q) for q in qualities if q)
+        median_qual = mean_quals[len(mean_quals) // 2] if mean_quals else 0.0
+    else:
+        median_qual = 0.0
+
+    if median_len > 1000:
+        # Long read — distinguish PacBio HiFi (high quality) from Nanopore
+        if median_qual >= 25:
+            platform = "pacbio"
+            details = (
+                f"Long reads detected (median {median_len}bp, Q{median_qual:.0f}). "
+                f"High quality suggests PacBio HiFi."
+            )
+        else:
+            platform = "nanopore"
+            details = (
+                f"Long reads detected (median {median_len}bp, Q{median_qual:.0f}). "
+                f"Lower quality suggests Nanopore."
+            )
+    else:
+        platform = "illumina"
+        details = f"Short reads detected (median {median_len}bp). Illumina platform."
+
+    return {
+        "platform": platform,
+        "median_len": median_len,
+        "median_qual": round(median_qual, 1),
+        "details": details,
     }

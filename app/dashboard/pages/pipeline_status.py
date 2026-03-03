@@ -14,10 +14,12 @@ from app.dashboard.app import app as dash_app
 MAX_CPUS = os.cpu_count() or 1
 
 STEPS = ["fastqc", "cutadapt", "dada2", "taxonomy"]
+STEPS_LONGREAD = ["fastqc", "dada2_longread", "taxonomy"]
 STEP_LABELS = {
     "fastqc": "FastQC",
     "cutadapt": "Cutadapt",
     "dada2": "DADA2",
+    "dada2_longread": "DADA2 (Long-Read)",
     "taxonomy": "Taxonomy",
 }
 
@@ -637,7 +639,11 @@ def _build_history_table():
                 [
                     html.Td(d.name),
                     status_cell,
-                    html.Td(d.sequencing_type or ""),
+                    html.Td(
+                        f"{d.sequencing_type or ''} ({d.platform.title()})"
+                        if d.platform and d.platform != "illumina"
+                        else (d.sequencing_type or "")
+                    ),
                     html.Td(d.variable_region or ""),
                     html.Td(d.sample_count or "—"),
                     html.Td(d.asv_count or "—"),
@@ -1137,8 +1143,23 @@ def on_poll(n_intervals, dataset_id):
 
     completed = set(status.get("steps_completed", []))
     current = status.get("current_step")
+
+    # Use long-read step list if any long-read step is in progress or completed
+    is_longread = bool({"dada2_longread"} & (completed | {current}))
+    if not is_longread:
+        from app.db.database import SessionLocal
+        from app.db.models import Dataset
+        _db = SessionLocal()
+        try:
+            _ds = _db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if _ds and _ds.platform in ("pacbio", "nanopore"):
+                is_longread = True
+        finally:
+            _db.close()
+    active_steps = STEPS_LONGREAD if is_longread else STEPS
+
     step_items = []
-    for step in STEPS:
+    for step in active_steps:
         if step in completed and step != current:
             icon = "  "
             color = "text-success"
@@ -1269,8 +1290,22 @@ def restore_progress_on_load(_, dataset_id):
 
     completed = set(status.get("steps_completed", []))
     current = status.get("current_step")
+
+    is_longread = bool({"dada2_longread"} & (completed | {current}))
+    if not is_longread:
+        from app.db.database import SessionLocal
+        from app.db.models import Dataset
+        _db = SessionLocal()
+        try:
+            _ds = _db.query(Dataset).filter(Dataset.id == dataset_id).first()
+            if _ds and _ds.platform in ("pacbio", "nanopore"):
+                is_longread = True
+        finally:
+            _db.close()
+    active_steps = STEPS_LONGREAD if is_longread else STEPS
+
     step_items = []
-    for step in STEPS:
+    for step in active_steps:
         if step in completed and step != current:
             icon = "  "
             color = "text-success"
