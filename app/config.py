@@ -62,8 +62,8 @@ DEBUG = True
 DADA2_DEFAULTS = {
     "trim_left_f": 0,
     "trim_left_r": 0,
-    "trunc_len_f": 250,
-    "trunc_len_r": 200,
+    "trunc_len_f": 0,
+    "trunc_len_r": 0,
     "min_overlap": 12,
     "threads": min(32, max(1, os.cpu_count() - 1)),  # Cap at 32, leave 1 core free
 }

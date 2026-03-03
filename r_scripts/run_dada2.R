@@ -80,7 +80,7 @@ tryCatch({
       fnFs, filtFs, fnRs, filtRs,
       trimLeft  = c(opt$trim_left_f, opt$trim_left_r),
       truncLen  = c(opt$trunc_len_f, opt$trunc_len_r),
-      maxN = 0, maxEE = c(2, 2), truncQ = 2,
+      maxN = 0, maxEE = c(5, 5), truncQ = 2,
       rm.phix = TRUE, compress = TRUE,
       multithread = use_mt
     )
@@ -90,7 +90,7 @@ tryCatch({
       fnFs, filtFs,
       trimLeft  = opt$trim_left_f,
       truncLen  = opt$trunc_len_f,
-      maxN = 0, maxEE = 2, truncQ = 2,
+      maxN = 0, maxEE = 5, truncQ = 2,
       rm.phix = TRUE, compress = TRUE,
       multithread = use_mt
     )
@@ -130,7 +130,8 @@ tryCatch({
   if (is_paired) {
     cat("Merging paired reads...\n")
     merged <- mergePairs(dadaFs, filtFs, dadaRs, filtRs,
-                         minOverlap=opt$min_overlap)
+                         minOverlap=opt$min_overlap,
+                         maxMismatch=1)
     seqtab <- makeSequenceTable(merged)
   } else {
     seqtab <- makeSequenceTable(dadaFs)

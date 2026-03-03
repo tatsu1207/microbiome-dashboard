@@ -1,6 +1,8 @@
-# MicrobiomeDash -- 16S rRNA Microbiome Analysis Dashboard
+# 16S Analyzer -- 16S rRNA Microbiome Analysis Dashboard
 
 A web-based tool for processing, managing, and visualizing 16S rRNA amplicon sequencing data. Built with Plotly Dash + FastAPI + SQLite.
+
+**Supported input**: Illumina paired-end or single-end amplicon FASTQ files targeting specific 16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S long reads (PacBio, Nanopore) are not supported — the pipeline's primer detection, quality profiling, and DADA2 error model are designed for short-read amplicon sequencing.
 
 **Three integrated tools:**
 
@@ -55,20 +57,26 @@ sudo apt install -y build-essential curl git wget libxml2-dev \
 ### Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/tatsu1207/microbiome-dashboard.git
-cd microbiome-dashboard
+git clone https://github.com/tatsu1207/16S-Pipeline.git
+cd 16S-Pipeline
 ```
 
 ### Step 2: Run the setup script
 
-The setup script automatically:
-- Creates the `microbiome` Conda environment with Python 3.11 + R 4.3
+The setup script uses a **4-environment architecture** to avoid dependency conflicts:
+
+| Environment | Contents |
+|-------------|----------|
+| `microbiome_16S` | Python 3.11 + CLI tools (FastQC, Cutadapt, MAFFT, FastTree, vsearch). The web app runs here. |
+| `dada2_16S` | R 4.3 + DADA2 (pre-built from bioconda, zero compilation) |
+| `analysis_16S` | R 4.3 + ALDEx2, DESeq2, ANCOM-BC2, MaAsLin2, LinDA, vegan |
+| `picrust2_16S` | PICRUSt2 functional prediction |
+
+The script also:
 - Installs all Python packages (FastAPI, Dash, scikit-bio, biom-format, etc.)
-- Installs R packages (DADA2, ALDEx2, DESeq2, ANCOM-BC2, MaAsLin2, LinDA, vegan)
-- Installs bioinformatics CLI tools (FastQC, Cutadapt, MAFFT, FastTree, vsearch)
-- Creates a separate `picrust2` Conda environment for PICRUSt2
 - Downloads SILVA 138.1 reference databases (optional, prompted)
 - Generates `app/config.py` with auto-detected paths
+- Skips any component that is already installed (safe to re-run)
 
 ```bash
 chmod +x setup_ubuntu.sh
@@ -76,12 +84,11 @@ chmod +x setup_ubuntu.sh
 ```
 
 > Expected time: 15-30 minutes depending on internet speed and system.
-> The R/Bioconductor package installation takes the longest.
 
 ### Step 3: Activate the environment
 
 ```bash
-conda activate microbiome
+conda activate microbiome_16S
 ```
 
 ---
@@ -89,7 +96,7 @@ conda activate microbiome
 ## Running the App
 
 ```bash
-conda activate microbiome
+conda activate microbiome_16S
 ./run.sh
 ```
 
@@ -98,7 +105,7 @@ The app runs in the background. The port is auto-assigned based on your UID (700
 To run manually in the foreground:
 
 ```bash
-conda activate microbiome
+conda activate microbiome_16S
 uvicorn app.main:app --reload --reload-exclude data --host 0.0.0.0 --port 8050
 ```
 
@@ -107,7 +114,7 @@ uvicorn app.main:app --reload --reload-exclude data --host 0.0.0.0 --port 8050
 ## Project Structure
 
 ```
-microbiome-dashboard/
+16S-Pipeline/
 ├── app/
 │   ├── main.py                  # FastAPI + Dash entry point
 │   ├── config.py                # Auto-generated settings and paths
@@ -116,16 +123,19 @@ microbiome-dashboard/
 │   │   └── upload.py            # File upload API
 │   ├── pipeline/                # Pipeline Engine
 │   │   ├── runner.py            # Pipeline orchestrator
+│   │   ├── detect.py            # Auto-detect sequencing type + variable region
+│   │   ├── quality.py           # Quality profiling + auto trunc_len detection
 │   │   ├── qc.py                # FastQC quality control
+│   │   ├── qc_pdf.py            # QC report PDF generation
 │   │   ├── trim.py              # Cutadapt adapter trimming
-│   │   ├── dada2.py             # DADA2 denoising
-│   │   ├── taxonomy.py          # Taxonomic assignment
+│   │   ├── dada2.py             # DADA2 denoising (R wrapper)
+│   │   ├── taxonomy.py          # Taxonomic assignment (R wrapper)
 │   │   ├── phylogeny.py         # Phylogenetic tree building
 │   │   ├── biom_convert.py      # BIOM format conversion
 │   │   └── picrust2.py          # PICRUSt2 functional prediction
 │   ├── data_manager/            # Data Management
-│   │   ├── biom_ops.py          # BIOM file operations
-│   │   ├── mothur_convert.py    # Mothur format import
+│   │   ├── biom_ops.py          # BIOM region detection, extraction, combining
+│   │   ├── mothur_convert.py    # Bidirectional BIOM/MOTHUR conversion
 │   │   ├── rare_asv.py          # Rare ASV filtering
 │   │   └── subsample.py         # Rarefaction subsampling
 │   ├── analysis/                # Analysis Engine
@@ -142,10 +152,31 @@ microbiome-dashboard/
 │   ├── dashboard/               # Plotly Dash UI
 │   │   ├── app.py               # Dash app initialization
 │   │   ├── layout.py            # Sidebar nav + page routing
-│   │   └── pages/               # One file per page
+│   │   ├── components/
+│   │   │   └── file_browser.py  # Server-side file/directory browser modal
+│   │   └── pages/               # One file per page (16 pages)
+│   │       ├── intro_page.py           # Landing page + quick-start guide
+│   │       ├── file_manager.py         # Upload FASTQ, attach metadata
+│   │       ├── pipeline_status.py      # Launch + monitor DADA2 pipeline
+│   │       ├── datasets_page.py        # Inspect BIOM, extract sub-regions
+│   │       ├── combine_page.py         # Merge BIOM files across studies
+│   │       ├── biom_browser_page.py    # Read-only BIOM inspection
+│   │       ├── subsampling_page.py     # Rarefy + filter samples
+│   │       ├── rare_asv_page.py        # Remove low-prevalence ASVs
+│   │       ├── mothur_page.py          # BIOM <-> MOTHUR conversion
+│   │       ├── alpha_page.py           # Alpha diversity analysis
+│   │       ├── beta_page.py            # Beta diversity + ordination
+│   │       ├── taxonomy_page.py        # Taxonomy composition plots
+│   │       ├── diff_abundance_page.py  # Differential abundance (5 tools)
+│   │       ├── pathways_page.py        # PICRUSt2 pathway analysis
+│   │       ├── picrust2_page.py        # Standalone PICRUSt2 runner
+│   │       └── kegg_map_page.py        # KEGG pathway map viewer
+│   ├── utils/                   # Utility modules
+│   │   ├── file_handler.py      # Register local FASTQ files into DB
+│   │   └── metadata_parser.py   # Metadata CSV/TSV parser + validator
 │   └── db/                      # SQLAlchemy models + database
 │       ├── database.py          # Session management
-│       └── models.py            # 11 ORM tables
+│       └── models.py            # 12 ORM tables
 ├── r_scripts/                   # R analysis scripts
 │   ├── run_dada2.R              # DADA2 pipeline
 │   ├── run_taxonomy.R           # Taxonomy assignment
@@ -164,6 +195,7 @@ microbiome-dashboard/
 │   ├── combined/                # Combined/merged datasets
 │   └── exports/                 # User exports
 ├── setup_ubuntu.sh              # One-command installation script
+├── setup_wsl2.sh                # WSL2-specific setup helper
 ├── run.sh                       # Start the application
 ├── environment.yml              # Conda environment specification
 ├── requirements.txt             # Python dependencies (pip)
@@ -256,7 +288,7 @@ source ~/.bashrc
 Make sure system libraries are installed (see [Prerequisites](#prerequisites)), then retry:
 
 ```bash
-conda activate microbiome
+conda activate dada2_16S
 Rscript -e 'BiocManager::install("dada2", force=TRUE)'
 ```
 
@@ -281,7 +313,7 @@ uvicorn app.main:app --reload --reload-exclude data --host 0.0.0.0 --port 8051
 PICRUSt2 requires its own environment due to dependency conflicts:
 
 ```bash
-conda create -n picrust2 -c bioconda -c conda-forge picrust2 -y
+conda create -n picrust2_16S -c bioconda -c conda-forge picrust2 -y
 ```
 
 The setup script handles this automatically.

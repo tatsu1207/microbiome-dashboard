@@ -1,55 +1,55 @@
 """
-MicrobiomeDash — Quality profiling and auto-detection of DADA2 truncation parameters.
+16S Analyzer — Quality profiling and auto-detection of DADA2 truncation parameters.
 
-Reads quality scores from FASTQ files and determines optimal
-trunc_len_f / trunc_len_r so that >=70% of reads pass DADA2's maxEE<=2 filter,
-while maintaining sufficient overlap for paired-end merging.
-
-For paired-end data, DADA2's filterAndTrim discards the entire pair if either
-direction fails, so we use a higher per-direction threshold (sqrt of target)
-to achieve the desired combined retention.
+Strategy:
+  1. Determine insert length from the detected variable region and primer lengths.
+  2. Profile per-base quality and truncate from the tail where a 10bp sliding
+     window mean drops below Q20.
+  3. Ensure truncation lengths satisfy the overlap constraint for PE merging
+     (trunc_f + trunc_r >= insert_len + min_overlap). Extend R1 first (better
+     quality), then R2 if needed.
+  4. For single-end reads, truncate at the quality drop-off only.
 """
 import gzip
 import logging
-import math
 from pathlib import Path
 
 from app.pipeline.detect import PRIMERS, detect_sequencing_type
 
-# Minimum truncation length we'll consider (shorter than this loses too much data)
+# Absolute floor — never truncate shorter than this
 _MIN_TRUNC = 100
+
+# Quality threshold: truncate where per-base mean Phred drops below this
+_QUAL_FLOOR = 20
 
 
 def detect_truncation_params(
     trimmed_dir: Path,
     sequencing_type: str,
     variable_region: str | None,
-    min_overlap: int = 12,
-    target_retention: float = 0.70,
+    min_overlap: int = 20,
     n_reads: int = 5000,
     primer_offset_f: int = 0,
     primer_offset_r: int = 0,
     logger: logging.Logger | None = None,
+    **_kwargs,
 ) -> dict:
-    """Auto-detect optimal DADA2 truncation lengths from quality profiles.
+    """Auto-detect optimal DADA2 truncation lengths.
 
-    Args:
-        trimmed_dir: Directory with FASTQ(.gz) files.
-        sequencing_type: "paired-end" or "single-end".
-        variable_region: Detected 16S region (e.g., "V3-V4") for amplicon length.
-        min_overlap: Minimum bases of overlap required for PE merging.
-        target_retention: Fraction of reads that must pass EE<=2 (default 0.70).
-        n_reads: Number of reads to sample for profiling.
-        primer_offset_f: Bases to skip at start of R1 (primer length, for raw reads).
-        primer_offset_r: Bases to skip at start of R2 (primer length, for raw reads).
-        logger: Optional logger.
+    For paired-end:
+      - Computes insert length from variable region and primers.
+      - Finds quality cutoff where 10bp sliding window mean drops below Q20.
+      - Ensures trunc_f + trunc_r >= insert_len + min_overlap.
+      - Extends R1 first (better quality), then R2 if overlap is insufficient.
 
-    Returns:
-        dict with: trunc_len_f, trunc_len_r, details (str)
+    For single-end:
+      - Truncates at quality drop-off only.
+
+    Returns dict with: trunc_len_f, trunc_len_r, details (str)
     """
     log = logger or logging.getLogger(__name__)
 
-    # Find FASTQ files and use detect_sequencing_type to properly identify R1/R2
+    # Find FASTQ files
     all_fastq = sorted(trimmed_dir.glob("*.fastq.gz")) + sorted(
         trimmed_dir.glob("*.fq.gz")
     )
@@ -74,79 +74,78 @@ def detect_truncation_params(
 
     is_paired = sequencing_type == "paired-end" and r2_files
 
-    # For paired-end, DADA2 discards the pair if EITHER direction fails EE≤2.
-    # To achieve the desired combined retention, raise the per-direction target:
-    #   per_dir_target ≈ sqrt(target) so that per_dir² ≈ target
-    per_dir_target = math.sqrt(target_retention) if is_paired else target_retention
-
-    # Sample quality scores from R1 (skip primer bases)
+    # Profile R1 quality
     log.info("Profiling R1 quality scores...")
     r1_scores = _read_quality_scores(r1_files[0], n_reads, skip_bases=primer_offset_f)
-    trunc_f = _find_optimal_trunc(r1_scores, target_retention=per_dir_target)
-    r1_pass = _pass_rate_at(r1_scores, trunc_f) if trunc_f else 0.0
+    r1_median_len = _median_read_length(r1_scores)
 
-    trunc_r = 0
-    r2_pass = 0.0
+    if not is_paired:
+        trunc_f = _quality_cutoff(r1_scores)
+        r1_pass = _pass_rate_at(r1_scores, trunc_f)
+        details = f"trunc_len_f={trunc_f} ({r1_pass:.0%} pass EE≤5)"
+        log.info(f"Auto-detected: {details}")
+        return {"trunc_len_f": trunc_f, "trunc_len_r": 0, "details": details}
 
-    if is_paired:
-        log.info("Profiling R2 quality scores...")
-        r2_scores = _read_quality_scores(r2_files[0], n_reads, skip_bases=primer_offset_r)
-        trunc_r = _find_optimal_trunc(r2_scores, target_retention=per_dir_target)
-        r2_pass = _pass_rate_at(r2_scores, trunc_r) if trunc_r else 0.0
+    # Paired-end: profile R2 and compute insert length
+    log.info("Profiling R2 quality scores...")
+    r2_scores = _read_quality_scores(r2_files[0], n_reads, skip_bases=primer_offset_r)
+    r2_median_len = _median_read_length(r2_scores)
 
-        # Enforce overlap constraint.
-        # expected_amplicon_length includes primers, but truncation operates
-        # on post-cutadapt reads where primers are removed.  Subtract primer
-        # lengths to get the insert length that needs overlapping.
-        amplicon_len = _expected_amplicon_length(variable_region)
-        if amplicon_len:
-            primer_info = PRIMERS.get(variable_region, {})
-            fwd_len = len(primer_info.get("forward", ""))
-            rev_len = len(primer_info.get("reverse", ""))
-            insert_len = amplicon_len - fwd_len - rev_len
-            log.info(
-                f"Amplicon ~{amplicon_len}bp, primers {fwd_len}+{rev_len}bp, "
-                f"insert ~{insert_len}bp"
-            )
-            amplicon_len = insert_len
-        if amplicon_len and trunc_f and trunc_r:
-            overlap = trunc_f + trunc_r - amplicon_len
-            if overlap < min_overlap:
-                shortfall = min_overlap - overlap
-                log.warning(
-                    f"Overlap too small ({overlap}bp < {min_overlap}bp), "
-                    f"need {shortfall}bp more"
-                )
-                # Try increasing trunc_r first (R2 usually the bottleneck)
-                # then trunc_f if needed — within limits of read length
-                max_r2 = max(len(s) for s in r2_scores) if r2_scores else trunc_r
-                max_r1 = max(len(s) for s in r1_scores) if r1_scores else trunc_f
-                if trunc_r + shortfall <= max_r2:
-                    trunc_r += shortfall
-                    r2_pass = _pass_rate_at(r2_scores, trunc_r)
-                elif trunc_f + shortfall <= max_r1:
-                    trunc_f += shortfall
-                    r1_pass = _pass_rate_at(r1_scores, trunc_f)
-                else:
-                    # Split the increase
-                    half = shortfall // 2
-                    trunc_f = min(trunc_f + half + shortfall % 2, max_r1)
-                    trunc_r = min(trunc_r + half, max_r2)
-                    r1_pass = _pass_rate_at(r1_scores, trunc_f)
-                    r2_pass = _pass_rate_at(r2_scores, trunc_r)
-                overlap = trunc_f + trunc_r - amplicon_len
-                log.info(f"Adjusted for overlap: {overlap}bp")
+    insert_len = None
+    amplicon_range = _expected_amplicon_range(variable_region)
+    if amplicon_range:
+        primer_info = PRIMERS.get(variable_region, {})
+        fwd_len = len(primer_info.get("forward", ""))
+        rev_len = len(primer_info.get("reverse", ""))
+        # Use the upper bound so even the longest amplicons get enough overlap
+        insert_len = amplicon_range[1] - fwd_len - rev_len
+        insert_mid = (amplicon_range[0] + amplicon_range[1]) // 2 - fwd_len - rev_len
+        log.info(
+            f"Amplicon {amplicon_range[0]}-{amplicon_range[1]}bp, "
+            f"primers {fwd_len}+{rev_len}bp, "
+            f"insert {insert_mid}-{insert_len}bp (using upper bound)"
+        )
+
+    # Quality-based truncation (where 10bp window mean drops below Q20)
+    qual_trunc_f = _quality_cutoff(r1_scores)
+    qual_trunc_r = _quality_cutoff(r2_scores)
+
+    # Start from quality cutoffs, clamped to read length
+    trunc_f = max(_MIN_TRUNC, min(qual_trunc_f, r1_median_len))
+    trunc_r = max(_MIN_TRUNC, min(qual_trunc_r, r2_median_len))
+
+    log.info(f"Quality cutoff: R1={qual_trunc_f}, R2={qual_trunc_r}")
+
+    if insert_len:
+        # Ensure minimum overlap — extend reads back if needed
+        min_total = insert_len + min_overlap
+        if trunc_f + trunc_r < min_total:
+            shortfall = min_total - (trunc_f + trunc_r)
+            # Extend R1 first (usually better quality), then R2
+            extend_f = max(0, min(shortfall, r1_median_len - trunc_f))
+            trunc_f += extend_f
+            shortfall -= extend_f
+            if shortfall > 0:
+                extend_r = max(0, min(shortfall, r2_median_len - trunc_r))
+                trunc_r += extend_r
+
+        overlap = trunc_f + trunc_r - insert_len
+        log.info(f"Overlap-adjusted: R1={trunc_f}, R2={trunc_r}, overlap={overlap}bp")
+    else:
+        log.info(f"No region info, using quality cutoff: R1={trunc_f}, R2={trunc_r}")
+
+    r1_pass = _pass_rate_at(r1_scores, trunc_f)
+    r2_pass = _pass_rate_at(r2_scores, trunc_r)
+    combined = r1_pass * r2_pass
 
     details_parts = [
-        f"trunc_len_f={trunc_f} ({r1_pass:.0%} pass EE≤2)",
+        f"trunc_len_f={trunc_f} ({r1_pass:.0%} pass EE≤5)",
+        f"trunc_len_r={trunc_r} ({r2_pass:.0%} pass EE≤5)",
+        f"~{combined:.0%} combined retention",
     ]
-    if is_paired:
-        combined_pass = r1_pass * r2_pass
-        details_parts.append(f"trunc_len_r={trunc_r} ({r2_pass:.0%} pass EE≤2)")
-        details_parts.append(f"~{combined_pass:.0%} combined retention")
-        if amplicon_len:
-            overlap = trunc_f + trunc_r - amplicon_len
-            details_parts.append(f"overlap={overlap}bp")
+    if insert_len:
+        overlap = trunc_f + trunc_r - insert_len
+        details_parts.append(f"overlap={overlap}bp")
 
     details = ", ".join(details_parts)
     log.info(f"Auto-detected: {details}")
@@ -161,15 +160,7 @@ def detect_truncation_params(
 def _read_quality_scores(
     fastq_path: Path, n_reads: int = 5000, skip_bases: int = 0
 ) -> list[list[int]]:
-    """Read Phred+33 quality scores from first n_reads of a FASTQ(.gz) file.
-
-    Args:
-        skip_bases: Number of bases to skip from the start of each read
-                    (e.g., primer length when profiling raw reads).
-
-    Returns:
-        List of lists, each inner list is per-base Phred scores for one read.
-    """
+    """Read Phred+33 quality scores from first n_reads of a FASTQ(.gz) file."""
     scores = []
     opener = gzip.open if str(fastq_path).endswith(".gz") else open
     try:
@@ -177,7 +168,7 @@ def _read_quality_scores(
             line_num = 0
             for line in f:
                 line_num += 1
-                if line_num % 4 == 0:  # Quality line (4th line of each record)
+                if line_num % 4 == 0:
                     qual = line.rstrip()
                     phred = [ord(c) - 33 for c in qual]
                     if skip_bases:
@@ -191,66 +182,68 @@ def _read_quality_scores(
     return scores
 
 
-def _find_optimal_trunc(
-    quality_scores: list[list[int]],
-    max_ee: float = 2.0,
-    target_retention: float = 0.70,
-) -> int:
-    """Find the longest truncation length where >=target_retention of reads pass EE<=max_ee.
-
-    Returns 0 if no suitable length found.
-    """
+def _median_read_length(quality_scores: list[list[int]]) -> int:
+    """Return the median read length from quality score lists."""
     if not quality_scores:
         return 0
+    lengths = sorted(len(s) for s in quality_scores)
+    return lengths[len(lengths) // 2]
 
+
+def _quality_cutoff(quality_scores: list[list[int]], q_floor: int = _QUAL_FLOOR) -> int:
+    """Find the position where per-base mean quality drops below q_floor.
+
+    Scans from the end of the read backward. Returns the last position
+    where a sliding window of 10bp has mean quality >= q_floor.
+    """
+    if not quality_scores:
+        return _MIN_TRUNC
+
+    # Compute per-position mean quality
     max_len = max(len(s) for s in quality_scores)
+    mean_qual = []
+    for pos in range(max_len):
+        quals = [s[pos] for s in quality_scores if pos < len(s)]
+        if quals:
+            mean_qual.append(sum(quals) / len(quals))
+        else:
+            mean_qual.append(0)
 
-    # Precompute cumulative EE for each read
-    cum_ee = []
-    for scores in quality_scores:
-        ee = []
-        running = 0.0
-        for q in scores:
-            running += 10 ** (-q / 10)
-            ee.append(running)
-        cum_ee.append(ee)
+    # Use a 10bp sliding window from the end to find the quality drop-off
+    window = 10
+    cutoff = max_len
+    for pos in range(max_len - 1, window - 2, -1):
+        start = max(0, pos - window + 1)
+        win_mean = sum(mean_qual[start:pos + 1]) / (pos + 1 - start)
+        if win_mean >= q_floor:
+            cutoff = pos + 1  # truncate at this length (1-indexed)
+            break
+    else:
+        # Quality never reaches threshold — use minimum
+        cutoff = _MIN_TRUNC
 
-    # Search from max length down to _MIN_TRUNC
-    for trunc_len in range(max_len, _MIN_TRUNC - 1, -1):
-        passing = 0
-        total = 0
-        for ee_list in cum_ee:
-            if len(ee_list) >= trunc_len:
-                total += 1
-                if ee_list[trunc_len - 1] <= max_ee:
-                    passing += 1
-        if total == 0:
-            continue
-        rate = passing / total
-        if rate >= target_retention:
-            return trunc_len
-
-    return _MIN_TRUNC
+    return max(_MIN_TRUNC, cutoff)
 
 
-def _pass_rate_at(quality_scores: list[list[int]], trunc_len: int) -> float:
-    """Calculate fraction of reads passing EE<=2 at a given truncation length."""
+def _pass_rate_at(quality_scores: list[list[int]], trunc_len: int, max_ee: float = 5.0) -> float:
+    """Calculate fraction of ALL reads passing EE<=max_ee at a given truncation length.
+
+    Reads shorter than trunc_len count as failures (DADA2 discards them).
+    Default max_ee=5.0 matches DADA2's maxEE=c(5,5).
+    """
     if not quality_scores or trunc_len <= 0:
         return 0.0
     passing = 0
-    total = 0
     for scores in quality_scores:
         if len(scores) >= trunc_len:
-            total += 1
             ee = sum(10 ** (-q / 10) for q in scores[:trunc_len])
-            if ee <= 2.0:
+            if ee <= max_ee:
                 passing += 1
-    return passing / total if total > 0 else 0.0
+    return passing / len(quality_scores)
 
 
-def _expected_amplicon_length(variable_region: str | None) -> int | None:
-    """Get the expected amplicon length (midpoint) for a variable region."""
+def _expected_amplicon_range(variable_region: str | None) -> tuple[int, int] | None:
+    """Get the expected amplicon length range (lo, hi) for a variable region."""
     if not variable_region or variable_region not in PRIMERS:
         return None
-    lo, hi = PRIMERS[variable_region]["expected_len"]
-    return (lo + hi) // 2
+    return PRIMERS[variable_region]["expected_len"]

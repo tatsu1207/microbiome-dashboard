@@ -843,7 +843,6 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
                 trimmed_dir=trimmed_dir,
                 sequencing_type=seq_type,
                 variable_region=var_region,
-                min_overlap=dataset.min_overlap,
                 logger=logger,
             )
             if trunc_f == 0 and auto["trunc_len_f"]:

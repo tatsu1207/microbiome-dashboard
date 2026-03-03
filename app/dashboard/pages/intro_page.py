@@ -107,6 +107,13 @@ layout = dbc.Container([
         "around three core tools:"
     ),
 
+    dbc.Alert([
+        html.Strong("Supported input: "),
+        "Illumina paired-end or single-end amplicon FASTQ files targeting specific "
+        "16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S "
+        "long reads (PacBio, Nanopore) are not supported.",
+    ], color="info", className="mb-3"),
+
     dbc.Row([
         _tool_card(
             "1. Pipeline Engine",
@@ -187,9 +194,9 @@ layout = dbc.Container([
     dbc.Card(
         dbc.CardBody(
             html.Pre(
-                "git clone <repo-url> && cd microbiome-dashboard\n"
+                "git clone https://github.com/tatsu1207/16S-Pipeline.git && cd 16S-Pipeline\n"
                 "bash setup_ubuntu.sh      # creates conda envs, installs R packages, downloads SILVA\n"
-                "conda activate microbiome\n"
+                "conda activate microbiome_16S\n"
                 "./run.sh                   # starts the server on port 7000 + UID",
                 className="mb-0",
                 style={"whiteSpace": "pre-wrap"},
@@ -199,9 +206,9 @@ layout = dbc.Container([
     ),
 
     html.P(
-        "The setup script creates two conda environments: microbiome (Python 3.11, "
-        "R 4.3.3 with Bioconductor packages) and picrust2 (PICRUSt2 functional "
-        "prediction). It also downloads the SILVA 138.2 reference database.",
+        "The setup script creates four conda environments: microbiome_16S (web app), "
+        "dada2_16S (R + DADA2), analysis_16S (R + DA tools), and picrust2_16S "
+        "(PICRUSt2). It also downloads the SILVA 138.1 reference database.",
         className="text-muted mt-2",
     ),
 
