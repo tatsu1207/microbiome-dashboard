@@ -28,6 +28,9 @@ def run_cutadapt(
 ) -> dict:
     """Run Cutadapt to remove primers from FASTQ files.
 
+    Cutadapt threads are capped at 32 to avoid hitting OS open-file limits,
+    regardless of how many threads the caller requests.
+
     If custom primers are provided, they override region-based lookup and
     Cutadapt always runs (no auto-skip).
     If variable_region is None and no custom primers, files are symlinked.
@@ -80,6 +83,9 @@ def run_cutadapt(
         }
 
     trim_stats = {"total_reads": 0, "trimmed_reads": 0, "samples_processed": 0}
+
+    # Cap Cutadapt threads to avoid "Too many open files" errors
+    threads = min(threads, 32)
 
     if is_paired:
         _trim_paired(
@@ -226,6 +232,111 @@ def _parse_cutadapt_stats(stderr: str, stats: dict):
                 stats["trimmed_reads"] += n
             except ValueError:
                 pass
+
+
+def _process_one_fastq(args: tuple) -> tuple[str, int]:
+    """Process a single FASTQ file: trim leading bases and fix N bases.
+
+    Designed to be called via multiprocessing.Pool.
+    Returns (filename, n_fixed).
+    """
+    import gzip
+
+    fq_path, out_path, trim_n = args
+    n_fixed = 0
+    with gzip.open(fq_path, "rt") as fin, gzip.open(out_path, "wt") as fout:
+        while True:
+            header = fin.readline()
+            if not header:
+                break
+            seq = fin.readline().rstrip()[trim_n:]
+            plus = fin.readline()
+            qual = fin.readline().rstrip()[trim_n:]
+
+            # Replace N bases with A at quality Q0
+            if "N" in seq:
+                seq_list = list(seq)
+                qual_list = list(qual)
+                for j, base in enumerate(seq_list):
+                    if base == "N" and j < len(qual_list):
+                        seq_list[j] = "A"
+                        qual_list[j] = "#"  # Phred 2 (matches original N quality)
+                        n_fixed += 1
+                seq = "".join(seq_list)
+                qual = "".join(qual_list)
+
+            fout.write(header)
+            fout.write(seq + "\n")
+            fout.write(plus)
+            fout.write(qual + "\n")
+
+    return (os.path.basename(fq_path), n_fixed)
+
+
+def trim_leading_bases(
+    trimmed_dir: Path,
+    trim_left_f: int,
+    trim_left_r: int,
+    sequencing_type: str,
+    logger: logging.Logger,
+    threads: int = 1,
+) -> Path:
+    """Physically trim leading bases and replace N bases in FASTQ files.
+
+    Two fixes for DADA2's maxN=0 requirement:
+    1. Trim leading bases (works around maxN applying before trimLeft).
+    2. Replace remaining N bases with 'A' at quality Q0 (Phred 0, '!'),
+       so DADA2 doesn't reject reads but maxEE properly penalizes them.
+
+    Files are processed in parallel using multiprocessing.
+
+    Writes processed files to a 'lead_trimmed' subdirectory alongside trimmed_dir.
+    Returns the path to the directory with processed files.
+    """
+    from multiprocessing import Pool
+
+    out_dir = trimmed_dir.parent / "lead_trimmed"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fastq_files = sorted(
+        list(trimmed_dir.glob("*.fastq.gz")) + list(trimmed_dir.glob("*.fq.gz"))
+    )
+
+    if not fastq_files:
+        logger.warning("No FASTQ files found for leading-base trimming")
+        return trimmed_dir
+
+    is_paired = sequencing_type == "paired-end"
+    filenames = [f.name for f in fastq_files]
+    detection = detect_sequencing_type(filenames)
+
+    # Build set of R2 filenames for paired-end
+    r2_names = set()
+    if is_paired:
+        for info in detection["samples"].values():
+            if info.get("R2"):
+                r2_names.add(info["R2"])
+
+    # Build work items for parallel processing
+    work_items = []
+    for fq in fastq_files:
+        is_r2 = fq.name in r2_names
+        trim_n = trim_left_r if is_r2 else trim_left_f
+        out_path = out_dir / fq.name
+        work_items.append((str(fq), str(out_path), trim_n))
+
+    n_workers = min(threads, len(work_items))
+    logger.info(f"Processing {len(work_items)} files with {n_workers} workers")
+
+    with Pool(processes=n_workers) as pool:
+        results = pool.map(_process_one_fastq, work_items)
+
+    for fname, n_fixed in results:
+        if n_fixed:
+            logger.info(f"  {fname}: fixed {n_fixed} N bases → A at Q0")
+
+    logger.info(f"Leading-base trimming complete → {out_dir}")
+    return out_dir
 
 
 def _symlink_files(src_dir: Path, dst_dir: Path):

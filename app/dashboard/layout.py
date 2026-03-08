@@ -2,9 +2,9 @@
 MicrobiomeDash — Main layout with sidebar navigation and page routing.
 """
 import dash_bootstrap_components as dbc
-from dash import Input, Output, dcc, html
+from dash import Input, Output, State, dcc, html
 
-from app.dashboard.app import app as dash_app
+from app.dashboard.app import THEME_DARK, THEME_LIGHT, app as dash_app
 
 
 def _nav_link(label, href, disabled=False):
@@ -14,6 +14,12 @@ def _nav_link(label, href, disabled=False):
 sidebar = html.Div(
     [
         html.H4("16S Pipeline", className="text-center my-3"),
+        dbc.Button(
+            id="theme-toggle-btn",
+            color="outline-secondary",
+            size="sm",
+            className="w-100 mb-2",
+        ),
         html.Hr(),
         dbc.Nav(
             [
@@ -32,7 +38,7 @@ sidebar = html.Div(
                 _nav_link("Rarefy & Filter", "/subsample"),
                 _nav_link("Combine Biom Files", "/combine"),
                 _nav_link("V-Region Extraction", "/datasets"),
-                _nav_link("BIOM & MOTHUR", "/mothur"),
+                _nav_link("Outlier Detection", "/sample-tree"),
                 # Tool 3: Analysis
                 html.H6("ANALYSIS", className="text-muted mt-4 mb-2 px-3"),
                 _nav_link("Alpha Diversity", "/alpha"),
@@ -49,6 +55,7 @@ sidebar = html.Div(
             pills=True,
         ),
     ],
+    id="sidebar",
     className="bg-dark vh-100 position-fixed p-3",
     style={"width": "260px", "overflowY": "auto"},
 )
@@ -59,6 +66,8 @@ SIDEBAR_WIDTH = "260px"
 def create_layout():
     return html.Div(
         [
+            dcc.Store(id="theme-store", storage_type="local", data="dark"),
+            html.Link(id="theme-link", rel="stylesheet", href=THEME_DARK),
             dcc.Location(id="url", refresh=False),
             sidebar,
             html.Div(
@@ -68,6 +77,62 @@ def create_layout():
             ),
         ]
     )
+
+
+# ── Theme toggle: flip store value ──────────────────────────────────────────
+
+dash_app.clientside_callback(
+    """
+    function(n_clicks, current) {
+        if (!n_clicks) return window.dash_clientside.no_update;
+        return current === "dark" ? "light" : "dark";
+    }
+    """,
+    Output("theme-store", "data"),
+    Input("theme-toggle-btn", "n_clicks"),
+    State("theme-store", "data"),
+)
+
+# ── Apply theme: swap stylesheet, sidebar class, button label, plots ────────
+
+dash_app.clientside_callback(
+    """
+    function(theme) {
+        var darkUrl = """ + f'"{THEME_DARK}"' + """;
+        var lightUrl = """ + f'"{THEME_LIGHT}"' + """;
+
+        // Swap Bootstrap stylesheet
+        var link = document.getElementById("theme-link");
+        if (link) link.setAttribute("href", theme === "dark" ? darkUrl : lightUrl);
+
+        // Swap sidebar background
+        var sb = document.getElementById("sidebar");
+        if (sb) {
+            sb.className = sb.className.replace(/bg-(dark|light)/g, "bg-" + theme);
+        }
+
+        // Re-style all Plotly charts
+        var isDark = theme === "dark";
+        var plots = document.querySelectorAll(".js-plotly-plot");
+        plots.forEach(function(plot) {
+            if (plot._fullLayout) {
+                Plotly.relayout(plot, {
+                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "plot_bgcolor": isDark ? "rgba(0,0,0,0)" : "rgba(255,255,255,1)",
+                    "font.color": isDark ? "#fff" : "#000",
+                    "xaxis.gridcolor": isDark ? "#444" : "#ddd",
+                    "yaxis.gridcolor": isDark ? "#444" : "#ddd"
+                });
+            }
+        });
+
+        // Button label
+        return theme === "dark" ? "Light" : "Dark";
+    }
+    """,
+    Output("theme-toggle-btn", "children"),
+    Input("theme-store", "data"),
+)
 
 
 # ── Page routing callback ────────────────────────────────────────────────────
@@ -104,11 +169,6 @@ def render_page(pathname):
         from app.dashboard.pages.combine_page import get_layout as combine_layout
 
         return combine_layout()
-
-    if pathname == "/mothur":
-        from app.dashboard.pages.mothur_page import get_layout as mothur_layout
-
-        return mothur_layout()
 
     if pathname == "/subsample":
         from app.dashboard.pages.subsampling_page import get_layout as subsample_layout
@@ -149,6 +209,11 @@ def render_page(pathname):
         from app.dashboard.pages.pathways_page import get_layout as pathways_layout
 
         return pathways_layout()
+
+    if pathname == "/sample-tree":
+        from app.dashboard.pages.sample_tree_page import get_layout as st_layout
+
+        return st_layout()
 
     if pathname == "/kegg-map":
         from app.dashboard.pages.kegg_map_page import get_layout as kegg_map_layout

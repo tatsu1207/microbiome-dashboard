@@ -876,29 +876,55 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
             trunc_f = dataset.trunc_len_f
             trunc_r = dataset.trunc_len_r
 
-            if trunc_f == 0 or trunc_r == 0:
-                from app.pipeline.quality import detect_truncation_params
+            from app.pipeline.quality import detect_truncation_params
 
-                auto = detect_truncation_params(
-                    trimmed_dir=trimmed_dir,
-                    sequencing_type=seq_type,
-                    variable_region=var_region,
-                    logger=logger,
-                )
-                if trunc_f == 0 and auto["trunc_len_f"]:
-                    trunc_f = auto["trunc_len_f"]
-                    dataset.trunc_len_f = trunc_f
-                if trunc_r == 0 and auto["trunc_len_r"]:
-                    trunc_r = auto["trunc_len_r"]
-                    dataset.trunc_len_r = trunc_r
-                db.commit()
-                logger.info(f"Auto-detected truncation: {auto['details']}")
-                _update_status(
-                    output_dir, "dada2", 35, completed_steps,
-                    auto_trunc_len_f=trunc_f,
-                    auto_trunc_len_r=trunc_r,
-                    auto_trunc_details=auto["details"],
-                )
+            auto = detect_truncation_params(
+                trimmed_dir=trimmed_dir,
+                sequencing_type=seq_type,
+                variable_region=var_region,
+                logger=logger,
+            )
+
+            # Always apply auto-detected trim_left for leading N bases
+            if dataset.trim_left_f == 0 and auto.get("trim_left_f"):
+                dataset.trim_left_f = auto["trim_left_f"]
+                logger.info(f"Auto trim_left_f={auto['trim_left_f']} (leading N)")
+            if dataset.trim_left_r == 0 and auto.get("trim_left_r"):
+                dataset.trim_left_r = auto["trim_left_r"]
+                logger.info(f"Auto trim_left_r={auto['trim_left_r']} (leading N)")
+
+            # Auto-detect truncation if not manually set
+            if trunc_f == 0 and auto["trunc_len_f"]:
+                trunc_f = auto["trunc_len_f"]
+                dataset.trunc_len_f = trunc_f
+            if trunc_r == 0 and auto["trunc_len_r"]:
+                trunc_r = auto["trunc_len_r"]
+                dataset.trunc_len_r = trunc_r
+
+            db.commit()
+            logger.info(f"Auto-detected: {auto['details']}")
+            _update_status(
+                output_dir, "dada2", 35, completed_steps,
+                auto_trunc_len_f=trunc_f,
+                auto_trunc_len_r=trunc_r,
+                auto_trunc_details=auto["details"],
+            )
+
+            # ── Pre-DADA2: trim leading bases and fix N bases ──────────
+            # DADA2's maxN=0 rejects any read containing N. Two fixes:
+            # 1. Trim leading bases (maxN applies before trimLeft).
+            # 2. Replace remaining N bases with A at Q0 so maxEE
+            #    penalizes them without outright rejection.
+            tlf = dataset.trim_left_f
+            tlr = dataset.trim_left_r
+            from app.pipeline.trim import trim_leading_bases
+            logger.info(f"Pre-DADA2 processing: trim_left F={tlf}/R={tlr}, fix N bases")
+            trimmed_dir = trim_leading_bases(
+                trimmed_dir, tlf, tlr, seq_type, logger, threads=threads,
+            )
+            # Reset trim_left since we've already trimmed
+            tlf = 0
+            tlr = 0
 
             # ── Step 3: DADA2 ──────────────────────────────────────────
 
@@ -910,8 +936,8 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
                 input_dir=trimmed_dir,
                 output_dir=output_dir,
                 sequencing_type=seq_type,
-                trim_left_f=dataset.trim_left_f,
-                trim_left_r=dataset.trim_left_r,
+                trim_left_f=tlf,
+                trim_left_r=tlr,
                 trunc_len_f=trunc_f,
                 trunc_len_r=trunc_r,
                 min_overlap=dataset.min_overlap,
@@ -977,6 +1003,7 @@ def _run_pipeline(dataset_id: int, threads: int | None = None):
                 _register_proc(dataset_id, proc),
                 _save_pid_to_status(DATASET_DIR / str(dataset_id) / "status.json", proc.pid),
             ),
+            skip_species=platform not in ("pacbio", "nanopore"),
         )
 
         _check_cancel(dataset_id)

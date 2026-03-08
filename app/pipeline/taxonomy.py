@@ -16,6 +16,7 @@ def run_taxonomy(
     threads: int,
     logger: logging.Logger,
     proc_callback: Callable[[subprocess.Popen], None] | None = None,
+    skip_species: bool = True,
 ) -> dict:
     """Run SILVA 138.1 taxonomy assignment via the R script.
 
@@ -24,14 +25,19 @@ def run_taxonomy(
     """
     taxonomy_path = output_dir / "taxonomy.tsv"
 
-    cmd = conda_cmd([
+    cmd_args = [
         "Rscript", str(R_SCRIPTS_DIR / "run_taxonomy.R"),
         "--rep_seqs", str(rep_seqs_path),
         "--output", str(taxonomy_path),
         "--silva_train", str(SILVA_TRAIN_SET),
-        "--silva_species", str(SILVA_SPECIES),
         "--threads", str(threads),
-    ], env_name=DADA2_ENV_NAME)
+    ]
+    if skip_species:
+        cmd_args.append("--skip_species")
+    else:
+        cmd_args.extend(["--silva_species", str(SILVA_SPECIES)])
+
+    cmd = conda_cmd(cmd_args, env_name=DADA2_ENV_NAME)
 
     logger.info("Running taxonomy assignment (SILVA 138.1)...")
 

@@ -187,8 +187,8 @@ def _add_retention_table(pdf: FPDF, sample_data: list[dict]):
         raw = s["raw"]
         filtered = s["filtered"]
         nonchim = s["nonchim"]
-        pct_filt = f"{filtered / raw * 100:.1f}%" if raw > 0 else "—"
-        pct_ret = f"{nonchim / raw * 100:.1f}%" if raw > 0 else "—"
+        pct_filt = f"{filtered / raw * 100:.1f}%" if raw > 0 else "-"
+        pct_ret = f"{nonchim / raw * 100:.1f}%" if raw > 0 else "-"
 
         row = [
             s["name"],

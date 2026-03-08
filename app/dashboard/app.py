@@ -9,11 +9,15 @@ from app.config import UPLOAD_DIR
 
 app = dash.Dash(
     __name__,
-    external_stylesheets=[dbc.themes.DARKLY],
+    external_stylesheets=[],
     suppress_callback_exceptions=True,
     title="16S Analyzer",
     update_title="Loading...",
 )
+
+# Theme URLs for light/dark mode toggle
+THEME_DARK = dbc.themes.DARKLY
+THEME_LIGHT = dbc.themes.FLATLY
 
 server = app.server
 

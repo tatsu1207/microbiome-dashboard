@@ -19,14 +19,18 @@ option_list <- list(
   make_option("--output",        type="character", help="Output taxonomy TSV path"),
   make_option("--silva_train",   type="character", help="SILVA training set path"),
   make_option("--silva_species", type="character", help="SILVA species assignment path"),
-  make_option("--threads",       type="integer",   default=1, help="Number of threads")
+  make_option("--threads",       type="integer",   default=1, help="Number of threads"),
+  make_option("--skip_species",  action="store_true", default=FALSE,
+              help="Skip species-level assignment (faster)")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
 
-if (is.null(opt$rep_seqs) || is.null(opt$output) ||
-    is.null(opt$silva_train) || is.null(opt$silva_species)) {
-  stop("All of --rep_seqs, --output, --silva_train, --silva_species are required")
+if (is.null(opt$rep_seqs) || is.null(opt$output) || is.null(opt$silva_train)) {
+  stop("--rep_seqs, --output, and --silva_train are required")
+}
+if (!opt$skip_species && is.null(opt$silva_species)) {
+  stop("--silva_species is required unless --skip_species is set")
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -48,11 +52,15 @@ tryCatch({
   # Assign taxonomy to genus level
   cat("Assigning taxonomy (this may take a while)...\n")
   taxa <- assignTaxonomy(seqs, opt$silva_train,
-                         multithread=use_mt)
+                         multithread=use_mt, tryRC=FALSE)
 
-  # Add species-level assignment (addSpecies does not support multithread)
-  cat("Adding species assignments...\n")
-  taxa <- addSpecies(taxa, opt$silva_species)
+  # Add species-level assignment (single-threaded, slow)
+  if (!opt$skip_species) {
+    cat("Adding species assignments...\n")
+    taxa <- addSpecies(taxa, opt$silva_species)
+  } else {
+    cat("Skipping species assignment (--skip_species)\n")
+  }
 
   # Build output data frame
   tax_df <- data.frame(

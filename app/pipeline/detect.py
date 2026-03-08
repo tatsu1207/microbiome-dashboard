@@ -302,9 +302,10 @@ def _detect_region_bbmap(fastq_path: Path, n_reads: int = 500) -> dict:
                 "bbmap.sh",
                 f"ref={ref_path}",
                 f"in={subset_path}",
-                f"outm={sam_path}",
+                f"out={sam_path}",
                 "nodisk=t",
                 "ambiguous=best",
+                "minid=0.5",
                 "threads=2",
                 "overwrite=t",
                 "-Xmx1g",
@@ -399,23 +400,31 @@ def _coords_to_region(positions: list[tuple[int, int]]) -> dict:
     median_start = starts[len(starts) // 2]
     median_end = ends[len(ends) // 2]
 
-    # Score each region by how well the reads overlap it
-    best_region = None
-    best_score = 0.0
-
+    # Score each region by how well the reads overlap it.
+    # Prefer the smallest (most specific) region with high coverage.
+    tolerance = 50
+    candidates = []
     for region_name, (reg_start, reg_end) in _REGION_COORDS.items():
-        # Count reads that fall within this region (with some tolerance)
-        tolerance = 50
         hits = sum(
             1 for s, e in positions
             if s >= reg_start - tolerance and e <= reg_end + tolerance
         )
         score = hits / len(positions)
-        if score > best_score:
-            best_score = score
-            best_region = region_name
+        region_span = reg_end - reg_start
+        if score >= 0.3:
+            candidates.append((region_name, score, region_span))
 
-    if best_region and best_score >= 0.3:
+    # Among regions with >= 90% of the best score, pick the smallest span
+    best_region = None
+    best_score = 0.0
+    if candidates:
+        top_score = max(c[1] for c in candidates)
+        good = [c for c in candidates if c[1] >= top_score * 0.9]
+        best = min(good, key=lambda c: c[2])
+        best_region = best[0]
+        best_score = best[1]
+
+    if best_region:
         return {
             "region": best_region,
             "confidence": round(best_score, 2),

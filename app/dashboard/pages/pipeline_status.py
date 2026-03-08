@@ -149,17 +149,77 @@ layout = dbc.Container(
             align="end",
             className="mb-3",
         ),
-        # ── Custom Primers (optional) ────────────────────────────────────
+        # ── DADA2 Parameters (optional) ────────────────────────────────
         dbc.Card(
             [
                 dbc.CardHeader(
                     html.Span(
-                        "Custom Primers (optional)",
+                        "DADA2 Parameters (optional — auto-detected by default)",
                         className="fw-bold small",
                     ),
                 ),
                 dbc.CardBody(
                     [
+                        html.P(
+                            "Leave blank for auto-detection. Truncation positions "
+                            "are determined from quality profiles; trim-left removes "
+                            "leading bases (e.g. N-containing positions).",
+                            className="text-muted small mb-2",
+                        ),
+                        dbc.Row(
+                            [
+                                dbc.Col(
+                                    [
+                                        dbc.Label("Trunc Fwd", className="small"),
+                                        dbc.Input(
+                                            id="input-trunc-f",
+                                            type="number",
+                                            placeholder="auto",
+                                            min=0,
+                                        ),
+                                    ],
+                                    width=2,
+                                ),
+                                dbc.Col(
+                                    [
+                                        dbc.Label("Trunc Rev", className="small"),
+                                        dbc.Input(
+                                            id="input-trunc-r",
+                                            type="number",
+                                            placeholder="auto",
+                                            min=0,
+                                        ),
+                                    ],
+                                    width=2,
+                                ),
+                                dbc.Col(
+                                    [
+                                        dbc.Label("Trim Left Fwd", className="small"),
+                                        dbc.Input(
+                                            id="input-trimleft-f",
+                                            type="number",
+                                            placeholder="auto",
+                                            min=0,
+                                        ),
+                                    ],
+                                    width=2,
+                                ),
+                                dbc.Col(
+                                    [
+                                        dbc.Label("Trim Left Rev", className="small"),
+                                        dbc.Input(
+                                            id="input-trimleft-r",
+                                            type="number",
+                                            placeholder="auto",
+                                            min=0,
+                                        ),
+                                    ],
+                                    width=2,
+                                ),
+                            ],
+                            className="mb-3",
+                        ),
+                        html.Hr(className="my-2"),
                         html.P(
                             "Provide custom primer sequences to override auto-detection. "
                             "When set, Cutadapt will always run with these primers "
@@ -883,9 +943,16 @@ def update_selection_summary(checked_samples, run_name, file_ids_map):
     State("input-run-name", "value"),
     State("input-fwd-primer", "value"),
     State("input-rev-primer", "value"),
+    State("input-trunc-f", "value"),
+    State("input-trunc-r", "value"),
+    State("input-trimleft-f", "value"),
+    State("input-trimleft-r", "value"),
     prevent_initial_call=True,
 )
-def on_start_pipeline(n_clicks, checked_samples, file_ids_map, threads_val, run_name, fwd_primer, rev_primer):
+def on_start_pipeline(
+    n_clicks, checked_samples, file_ids_map, threads_val, run_name,
+    fwd_primer, rev_primer, trunc_f_val, trunc_r_val, trimleft_f_val, trimleft_r_val,
+):
     """Launch the DADA2 pipeline on the selected samples."""
     if not n_clicks or not checked_samples or not file_ids_map:
         return no_update, no_update, no_update, no_update, no_update, no_update
@@ -909,6 +976,20 @@ def on_start_pipeline(n_clicks, checked_samples, file_ids_map, threads_val, run_
                 ),
                 no_update, no_update,
             )
+
+    # Parse optional DADA2 truncation/trim parameters
+    def _int_or_none(val):
+        if val is None or val == "":
+            return None
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return None
+
+    trunc_f = _int_or_none(trunc_f_val)
+    trunc_r = _int_or_none(trunc_r_val)
+    trimleft_f = _int_or_none(trimleft_f_val)
+    trimleft_r = _int_or_none(trimleft_r_val)
 
     # ── 0. Check for duplicate run name ─────────────────────────────
     dataset_name = run_name.strip() if run_name and run_name.strip() else f"Samples_{len(checked_samples)}"
@@ -1007,7 +1088,8 @@ def on_start_pipeline(n_clicks, checked_samples, file_ids_map, threads_val, run_
             ),
         ]),
         html.Small(
-            "Truncation parameters will be auto-detected from quality profiles.",
+            "Truncation: auto-detected" if trunc_f is None and trunc_r is None
+            else f"Truncation: F={trunc_f or 'auto'}, R={trunc_r or 'auto'}",
             className="text-muted d-block mt-2",
         ),
     ]
@@ -1031,6 +1113,10 @@ def on_start_pipeline(n_clicks, checked_samples, file_ids_map, threads_val, run_
             file_ids=all_file_ids,
             dataset_name=dataset_name,
             threads=threads,
+            trunc_len_f=trunc_f,
+            trunc_len_r=trunc_r,
+            trim_left_f=trimleft_f,
+            trim_left_r=trimleft_r,
             custom_fwd_primer=custom_fwd,
             custom_rev_primer=custom_rev,
         )

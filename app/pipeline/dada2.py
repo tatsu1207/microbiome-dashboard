@@ -24,6 +24,7 @@ def run_dada2(
     threads: int,
     logger: logging.Logger,
     proc_callback: Callable[[subprocess.Popen], None] | None = None,
+    pool: str = "FALSE",
 ) -> dict:
     """Run DADA2 denoising via the R script.
 
@@ -46,6 +47,7 @@ def run_dada2(
         "--trunc_len_r", str(trunc_len_r),
         "--min_overlap", str(min_overlap),
         "--threads", str(threads),
+        "--pool", pool,
     ], env_name=DADA2_ENV_NAME)
 
     logger.info(f"Running DADA2 ({mode} mode)...")
@@ -68,6 +70,16 @@ def run_dada2(
     proc.wait()
 
     if proc.returncode != 0:
+        if proc.returncode < 0:
+            import signal as _signal
+            try:
+                sig_name = _signal.Signals(-proc.returncode).name
+            except (ValueError, AttributeError):
+                sig_name = f"signal {-proc.returncode}"
+            raise RuntimeError(
+                f"DADA2 R script killed by {sig_name}. "
+                f"Last output: {last_line!r}"
+            )
         raise RuntimeError(f"DADA2 R script failed (exit code {proc.returncode})")
 
     # Parse JSON status from last line of output
@@ -127,6 +139,7 @@ def run_dada2_longread(
     threads: int | None = None,
     logger: logging.Logger | None = None,
     proc_callback: Callable[[subprocess.Popen], None] | None = None,
+    pool: str = "FALSE",
 ) -> dict:
     """Run DADA2 long-read denoising via the R script.
 
@@ -155,6 +168,7 @@ def run_dada2_longread(
         "--max_ee", str(max_ee or defaults["max_ee"]),
         "--band_size", str(band_size or defaults["band_size"]),
         "--threads", str(threads or defaults["threads"]),
+        "--pool", pool,
     ], env_name=DADA2_ENV_NAME)
 
     logger.info(f"Running DADA2 (long-read / {platform} mode)...")
@@ -176,6 +190,16 @@ def run_dada2_longread(
     proc.wait()
 
     if proc.returncode != 0:
+        if proc.returncode < 0:
+            import signal as _signal
+            try:
+                sig_name = _signal.Signals(-proc.returncode).name
+            except (ValueError, AttributeError):
+                sig_name = f"signal {-proc.returncode}"
+            raise RuntimeError(
+                f"DADA2 long-read R script killed by {sig_name}. "
+                f"Last output: {last_line!r}"
+            )
         raise RuntimeError(f"DADA2 long-read R script failed (exit code {proc.returncode})")
 
     r_status = {}

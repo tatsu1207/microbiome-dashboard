@@ -54,18 +54,15 @@ layout = dbc.Container(
                                 dbc.Input(
                                     id="fm-study-name",
                                     placeholder="e.g. CRC_cohort_2024",
-                                    debounce=True,
                                 ),
                             ],
                             className="mt-2",
                             style={"maxWidth": "400px"},
                         ),
+                        # Hidden button kept for callback wiring
                         dbc.Button(
-                            "Register Upload",
                             id="fm-btn-register",
-                            color="success",
-                            className="mt-2",
-                            disabled=True,
+                            style={"display": "none"},
                         ),
                         html.Div(id="fm-upload-status", className="mt-3"),
                     ]
@@ -78,6 +75,8 @@ layout = dbc.Container(
         dcc.Store(id="fm-sort-field", data="sample_name"),
         dcc.Store(id="fm-sort-asc", data=True),
         dcc.Store(id="fm-checked-samples", data=[]),
+        dcc.Store(id="fm-pending-file-count", data=0),
+        dcc.Interval(id="fm-register-interval", interval=2000, disabled=True),
         dcc.Download(id="fm-download-meta-selected"),
         dcc.ConfirmDialog(id="fm-confirm-delete", message=""),
         # ── Metadata Upload ──────────────────────────────────────────────
@@ -520,56 +519,70 @@ def on_file_uploaded(file_paths):
     )
 
 
-# ── Callback 1b: Enable register button when files exist ────────────────────
+# ── Callback 1b: Start debounce timer when files arrive ─────────────────────
 
 
 @dash_app.callback(
+    Output("fm-register-interval", "disabled"),
+    Output("fm-pending-file-count", "data"),
     Output("fm-btn-register", "disabled"),
     Input("fm-upload-file-status", "children"),
+    State("fm-du-upload", "upload_id"),
+    prevent_initial_call=True,
 )
-def enable_register_button(status):
-    """Enable the Register button when at least one file has been uploaded."""
-    if status:
-        return False
-    return True
+def on_file_arrived(file_status, du_upload_id):
+    """When a new file finishes uploading, (re)start the debounce interval."""
+    if not file_status or not du_upload_id:
+        return no_update, no_update, no_update
+    staging_dir = UPLOAD_DIR / du_upload_id
+    if not staging_dir.exists():
+        return no_update, no_update, no_update
+    n = sum(
+        1 for f in staging_dir.iterdir()
+        if f.is_file() and (f.name.endswith(".fastq.gz") or f.name.endswith(".fq.gz"))
+    )
+    # Store current count and enable the 2s interval
+    return False, n, no_update
 
 
-# ── Callback 1c: Register Upload (finalize) ─────────────────────────────────
+# ── Callback 1c: Debounced auto-registration ────────────────────────────────
 
 
 @dash_app.callback(
     Output("fm-upload-status", "children"),
     Output("fm-upload-trigger", "data"),
-    Output("fm-upload-file-status", "children", allow_duplicate=True),
-    Output("fm-btn-register", "disabled", allow_duplicate=True),
-    Input("fm-btn-register", "n_clicks"),
+    Output("fm-register-interval", "disabled", allow_duplicate=True),
+    Output("fm-pending-file-count", "data", allow_duplicate=True),
+    Input("fm-register-interval", "n_intervals"),
     State("fm-du-upload", "upload_id"),
     State("fm-study-name", "value"),
     State("fm-upload-trigger", "data"),
+    State("fm-pending-file-count", "data"),
     prevent_initial_call=True,
 )
-def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
-    """Scan the dash-uploader staging directory, move files to flat UPLOAD_DIR, and create DB records."""
+def on_register_upload(n_intervals, du_upload_id, study_name, trigger, prev_count):
+    """Register once the file count has stabilised (no new files for 2s)."""
     if not du_upload_id:
-        return dbc.Alert("No upload in progress.", color="warning"), no_update, no_update, no_update
+        return no_update, no_update, True, no_update
 
     staging_dir = UPLOAD_DIR / du_upload_id
     if not staging_dir.exists():
-        return dbc.Alert("Upload directory not found.", color="danger"), no_update, no_update, no_update
+        return no_update, no_update, True, no_update
 
-    # Collect FASTQ filenames from staging
-    staged_files = []
-    for fpath in sorted(staging_dir.iterdir()):
-        if fpath.is_dir():
-            continue
-        if fpath.name.endswith(".fastq.gz") or fpath.name.endswith(".fq.gz"):
-            staged_files.append(fpath)
-        else:
-            fpath.unlink(missing_ok=True)
+    # Count current files
+    staged_files = [
+        f for f in sorted(staging_dir.iterdir())
+        if f.is_file() and (f.name.endswith(".fastq.gz") or f.name.endswith(".fq.gz"))
+    ]
+    current_count = len(staged_files)
 
     if not staged_files:
         shutil.rmtree(staging_dir, ignore_errors=True)
-        return dbc.Alert("No FASTQ files found in upload.", color="warning"), no_update, no_update, no_update
+        return no_update, no_update, True, no_update
+
+    # If count changed since last tick, wait another cycle
+    if current_count != prev_count:
+        return no_update, no_update, no_update, current_count
 
     saved_filenames = [f.name for f in staged_files]
 
@@ -599,8 +612,8 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
                 color="danger",
             ),
             no_update,
-            "",     # clear file status
-            True,   # disable register button
+            True,
+            0,
         )
 
     # Move files from staging to flat UPLOAD_DIR
@@ -699,7 +712,7 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
         db.commit()
     except Exception as e:
         db.rollback()
-        return dbc.Alert(f"Database error: {e}", color="danger"), no_update, no_update, no_update
+        return dbc.Alert(f"Database error: {e}", color="danger"), no_update, True, 0
     finally:
         db.close()
 
@@ -728,8 +741,8 @@ def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
     return (
         dbc.Alert(alert_children, color="success"),
         (trigger or 0) + 1,
-        "",     # clear file status
-        True,   # disable register button
+        True,
+        0,
     )
 
 

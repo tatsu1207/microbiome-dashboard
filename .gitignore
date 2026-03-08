@@ -61,7 +61,7 @@ run.pid
 
 # --- Claude Code ---
 .claude/
-
+CLAUDE_REFERENCE.MD
 # --- Test files ---
 test_*.py
 

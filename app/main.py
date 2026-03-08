@@ -21,7 +21,6 @@ import app.dashboard.pages.pipeline_status  # noqa: F401
 import app.dashboard.pages.file_manager  # noqa: F401
 import app.dashboard.pages.datasets_page  # noqa: F401
 import app.dashboard.pages.combine_page  # noqa: F401
-import app.dashboard.pages.mothur_page  # noqa: F401
 import app.dashboard.pages.alpha_page  # noqa: F401
 import app.dashboard.pages.beta_page  # noqa: F401
 import app.dashboard.pages.taxonomy_page  # noqa: F401
@@ -32,6 +31,7 @@ import app.dashboard.pages.subsampling_page  # noqa: F401
 import app.dashboard.pages.rare_asv_page  # noqa: F401
 import app.dashboard.pages.kegg_map_page  # noqa: F401
 import app.dashboard.pages.picrust2_page  # noqa: F401
+import app.dashboard.pages.sample_tree_page  # noqa: F401
 
 
 # ── FastAPI application ───────────────────────────────────────────────────────

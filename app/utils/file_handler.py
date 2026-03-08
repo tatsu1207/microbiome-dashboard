@@ -61,16 +61,20 @@ def register_upload(
     fastq_dir: str | Path,
     db: Session,
     project_id: int | None = None,
+    *,
+    symlink: bool = False,
 ) -> Upload:
     """Register local FASTQ files in the database.
 
-    Files are copied into data/uploads/{id}/fastq/ so that pipeline I/O
-    runs on the fast WSL-native filesystem instead of the slow /mnt/ bridge.
+    Files are copied (or symlinked) into data/uploads/{id}/fastq/ so that
+    pipeline I/O uses a consistent path layout.
 
     Args:
         fastq_dir: Path to directory containing FASTQ files.
         db: SQLAlchemy session.
         project_id: Optional project to associate with.
+        symlink: If True, create symlinks instead of copying files.
+                 Much faster for large datasets already on a local filesystem.
 
     Returns:
         The created Upload ORM object.
@@ -92,14 +96,17 @@ def register_upload(
     dest_fastq_dir = dest_dir / "fastq"
     dest_fastq_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy FASTQ files into the project, renaming to avoid collisions
+    # Copy or symlink FASTQ files into the project
     total_size = 0.0
     copied_names: dict[Path, Path] = {}  # original path -> destination path
     for fpath in fastq_files:
         dest_path = _unique_dest(dest_fastq_dir / fpath.name)
-        shutil.copy2(fpath, dest_path)
+        if symlink:
+            dest_path.symlink_to(fpath.resolve())
+        else:
+            shutil.copy2(fpath, dest_path)
         copied_names[fpath] = dest_path
-        total_size += dest_path.stat().st_size / (1024 * 1024)
+        total_size += fpath.stat().st_size / (1024 * 1024)
 
     # Detect variable region from the first R1 / single-end file
     r1_file = next(
@@ -124,7 +131,7 @@ def register_upload(
     db.add(upload)
     db.flush()
 
-    # Create FastqFile records with paths to copied files
+    # Create FastqFile records with paths to destination files
     for fpath in fastq_files:
         sample_name = extract_sample_name(fpath.name)
         sample_info = detection["samples"].get(sample_name, {})
@@ -144,7 +151,7 @@ def register_upload(
                 filename=fpath.name,
                 file_path=str(copied_path),
                 read_direction=read_direction,
-                file_size_mb=round(copied_path.stat().st_size / (1024 * 1024), 2),
+                file_size_mb=round(fpath.stat().st_size / (1024 * 1024), 2),
             )
         )
 

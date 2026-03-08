@@ -13,6 +13,21 @@ suppressPackageStartupMessages({
   library(jsonlite)
 })
 
+# Flushing log helper — ensures output reaches Python before a potential crash
+log_msg <- function(...) {
+  cat(...)
+  flush.console()
+}
+
+# Decode signal number to name for crash diagnostics
+signal_name <- function(sig) {
+  names <- c("1"="SIGHUP","2"="SIGINT","4"="SIGILL","6"="SIGABRT",
+             "7"="SIGBUS","8"="SIGFPE","9"="SIGKILL","11"="SIGSEGV",
+             "13"="SIGPIPE","15"="SIGTERM")
+  n <- as.character(sig)
+  if (n %in% names(names)) names[[n]] else paste0("signal ", sig)
+}
+
 # ── CLI Arguments ─────────────────────────────────────────────────────────────
 
 option_list <- list(
@@ -32,7 +47,9 @@ option_list <- list(
   make_option("--max_len",     type="integer",   default=1600, help="Max read length after filtering (longread)"),
   make_option("--max_ee",      type="integer",   default=10,   help="Max expected errors (longread)"),
   make_option("--band_size",   type="integer",   default=32,   help="DADA2 BAND_SIZE (longread)"),
-  make_option("--platform",    type="character", default="pacbio", help="Platform: pacbio or nanopore (longread)")
+  make_option("--platform",    type="character", default="pacbio", help="Platform: pacbio or nanopore (longread)"),
+  make_option("--pool",        type="character", default="FALSE",  help="Pooling for dada(): FALSE, TRUE, or pseudo"),
+  make_option("--skip_filter", action="store_true", default=FALSE, help="Skip filterAndTrim, use existing filtered/ files")
 )
 
 opt <- parse_args(OptionParser(option_list=option_list))
@@ -43,6 +60,9 @@ if (is.null(opt$input_dir) || is.null(opt$output_dir)) {
 
 is_longread <- (opt$mode == "longread")
 is_paired <- (opt$mode == "paired")
+
+# Parse --pool: "FALSE" → FALSE, "TRUE" → TRUE, "pseudo" → "pseudo"
+pool_opt <- if (opt$pool == "TRUE") TRUE else if (opt$pool == "pseudo") "pseudo" else FALSE
 
 # ── Long-Read Pipeline (PacBio HiFi) ─────────────────────────────────────────
 
@@ -56,16 +76,16 @@ tryCatch({
   if (length(fnFs) == 0) stop("No FASTQ files found")
   sample.names <- sub("\\.(fastq|fq)(\\.gz)?$", "", basename(fnFs))
   sample.names <- sub("_R1[_.]?.*$|_1$", "", sample.names)
-  cat("Found", length(fnFs), "long-read samples\n")
+  log_msg("Found", length(fnFs), "long-read samples\n")
 
   use_mt <- ifelse(opt$threads > 1, opt$threads, FALSE)
 
   # ── Step 1: Remove Primers ──────────────────────────────────────────────
 
   if (!is.null(opt$fwd_primer) && !is.null(opt$rev_primer)) {
-    cat("Removing primers (orient=TRUE)...\n")
-    cat("  Forward:", opt$fwd_primer, "\n")
-    cat("  Reverse:", opt$rev_primer, "\n")
+    log_msg("Removing primers (orient=TRUE)...\n")
+    log_msg("  Forward:", opt$fwd_primer, "\n")
+    log_msg("  Reverse:", opt$rev_primer, "\n")
 
     nop_dir <- file.path(opt$output_dir, "noprimers")
     dir.create(nop_dir, recursive=TRUE, showWarnings=FALSE)
@@ -84,14 +104,14 @@ tryCatch({
     # Keep only samples with reads passing
     keep_prim <- prim_reads_out > 0
     if (sum(keep_prim) == 0) stop("No reads had primers removed for any sample")
-    cat(sum(keep_prim), "of", length(keep_prim), "samples had primers removed\n")
+    log_msg(sum(keep_prim), "of", length(keep_prim), "samples had primers removed\n")
 
     fnFs <- nopFs[keep_prim]
     sample.names <- sample.names[keep_prim]
     prim_reads_in  <- prim_reads_in[keep_prim]
     prim_reads_out <- prim_reads_out[keep_prim]
   } else {
-    cat("No primers specified, skipping primer removal\n")
+    log_msg("No primers specified, skipping primer removal\n")
     prim_reads_in  <- NULL
     prim_reads_out <- NULL
   }
@@ -102,7 +122,7 @@ tryCatch({
   dir.create(filt_dir, recursive=TRUE, showWarnings=FALSE)
   filtFs <- file.path(filt_dir, paste0(sample.names, "_filt.fastq.gz"))
 
-  cat("Filtering (minLen=", opt$min_len, ", maxLen=", opt$max_len,
+  log_msg("Filtering (minLen=", opt$min_len, ", maxLen=", opt$max_len,
       ", maxEE=", opt$max_ee, ")...\n", sep="")
   filt_out <- filterAndTrim(
     fnFs, filtFs,
@@ -114,7 +134,7 @@ tryCatch({
 
   keep <- filt_out[, "reads.out"] > 0
   if (sum(keep) == 0) stop("No reads passed filtering for any sample")
-  cat(sum(keep), "of", length(keep), "samples passed filtering\n")
+  log_msg(sum(keep), "of", length(keep), "samples passed filtering\n")
 
   sample.names <- sample.names[keep]
   filtFs <- filtFs[keep]
@@ -126,40 +146,45 @@ tryCatch({
   # ── Step 3: Learn Error Rates (PacBio error model) ─────────────────────
 
   if (opt$platform == "pacbio") {
-    cat("Learning error rates (PacBioErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
+    log_msg("Learning error rates (PacBioErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
     errF <- learnErrors(filtFs, errorEstimationFunction=PacBioErrfun,
                          BAND_SIZE=opt$band_size,
-                         multithread=use_mt)
+                         multithread=use_mt, randomize=TRUE)
   } else {
-    cat("Learning error rates (loessErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
+    log_msg("Learning error rates (loessErrfun, BAND_SIZE=", opt$band_size, ")...\n", sep="")
     errF <- learnErrors(filtFs, errorEstimationFunction=loessErrfun,
                          BAND_SIZE=opt$band_size,
-                         multithread=use_mt)
+                         multithread=use_mt, randomize=TRUE)
   }
 
   # ── Step 4: Dereplicate + Denoise ──────────────────────────────────────
 
-  cat("Dereplicating...\n")
+  log_msg("Dereplicating (", length(filtFs), " samples)...\n", sep="")
+  t0 <- proc.time()[["elapsed"]]
   derep <- derepFastq(filtFs)
   names(derep) <- sample.names
+  log_msg("Dereplication done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
 
-  cat("Denoising (BAND_SIZE=", opt$band_size, ", HOMOPOLYMER_GAP_PENALTY=-1)...\n", sep="")
+  log_msg("Denoising (BAND_SIZE=", opt$band_size, ", HOMOPOLYMER_GAP_PENALTY=-1, pool=", as.character(pool_opt), ")...\n", sep="")
+  t0 <- proc.time()[["elapsed"]]
   dadaFs <- dada(derep, err=errF, multithread=use_mt,
                   BAND_SIZE=opt$band_size,
-                  HOMOPOLYMER_GAP_PENALTY=-1)
+                  HOMOPOLYMER_GAP_PENALTY=-1,
+                  pool=pool_opt)
+  log_msg("Denoising done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
 
   # ── Step 5: Sequence Table + Chimera Removal ───────────────────────────
 
   seqtab <- makeSequenceTable(dadaFs)
-  cat("Sequence table:", nrow(seqtab), "samples,", ncol(seqtab), "ASVs\n")
+  log_msg("Sequence table:", nrow(seqtab), "samples,", ncol(seqtab), "ASVs\n")
 
-  cat("Removing chimeras...\n")
+  log_msg("Removing chimeras...\n")
   seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus",
                                        multithread=use_mt)
 
   asv_count <- ncol(seqtab.nochim)
   sample_count <- nrow(seqtab.nochim)
-  cat("After chimera removal:", sample_count, "samples,", asv_count, "ASVs\n")
+  log_msg("After chimera removal:", sample_count, "samples,", asv_count, "ASVs\n")
 
   if (asv_count == 0) stop("No ASVs survived chimera removal")
 
@@ -200,12 +225,12 @@ tryCatch({
 
   asv_path <- file.path(opt$output_dir, "asv_table.tsv")
   write.table(asv_table, asv_path, sep="\t", row.names=FALSE, quote=FALSE)
-  cat("Wrote:", asv_path, "\n")
+  log_msg("Wrote:", asv_path, "\n")
 
   track_path <- file.path(opt$output_dir, "track_reads.tsv")
   track_df <- cbind(sample = rownames(track), as.data.frame(track))
   write.table(track_df, track_path, sep="\t", row.names=FALSE, quote=FALSE)
-  cat("Wrote:", track_path, "\n")
+  log_msg("Wrote:", track_path, "\n")
 
   # ── Success ────────────────────────────────────────────────────────────
 
@@ -214,7 +239,7 @@ tryCatch({
     asv_count    = asv_count,
     sample_count = sample_count
   ), auto_unbox=TRUE)
-  cat("\n", status, "\n", sep="")
+  log_msg("\n", status, "\n", sep="")
   quit(status=0)
 
 }, error = function(e) {
@@ -222,7 +247,7 @@ tryCatch({
     status  = "error",
     message = conditionMessage(e)
   ), auto_unbox=TRUE)
-  cat("\n", status, "\n", sep="")
+  log_msg("\n", status, "\n", sep="")
   quit(status=1)
 })
 }
@@ -243,14 +268,14 @@ tryCatch({
 
     # Extract sample names from forward reads
     sample.names <- sub("_R1([_.].*)?\\.(fastq|fq)(\\.gz)?$|_1\\.(fastq|fq)(\\.gz)?$", "", basename(fnFs))
-    cat("Found", length(fnFs), "paired-end samples\n")
+    log_msg("Found", length(fnFs), "paired-end samples\n")
   } else {
     fnFs <- sort(list.files(opt$input_dir, pattern="\\.(fastq|fq)(\\.gz)?$", full.names=TRUE))
     if (length(fnFs) == 0) stop("No FASTQ files found")
     sample.names <- sub("\\.(fastq|fq)(\\.gz)?$", "", basename(fnFs))
     # Also strip _R1 suffixes if present in single-end mode
     sample.names <- sub("_R1[_.]?.*$|_1$", "", sample.names)
-    cat("Found", length(fnFs), "single-end samples\n")
+    log_msg("Found", length(fnFs), "single-end samples\n")
   }
 
   # ── Step 1: Filter and Trim ──────────────────────────────────────────────
@@ -258,88 +283,138 @@ tryCatch({
   filt_dir <- file.path(opt$output_dir, "filtered")
   dir.create(filt_dir, recursive=TRUE, showWarnings=FALSE)
 
-  filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
-
   # Use the --threads value for DADA2's multithread parameter.
   # When threads > 1 on Linux, DADA2 uses mclapply (forked parallelism).
   # (On Windows/WSL2 with fork issues, pass --threads 1 from the caller.)
   use_mt <- ifelse(opt$threads > 1, opt$threads, FALSE)
 
-  if (is_paired) {
-    filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
-    cat("Filtering and trimming (paired-end)...\n")
-    filt_out <- filterAndTrim(
-      fnFs, filtFs, fnRs, filtRs,
-      trimLeft  = c(opt$trim_left_f, opt$trim_left_r),
-      truncLen  = c(opt$trunc_len_f, opt$trunc_len_r),
-      maxN = 0, maxEE = c(5, 5), truncQ = 2,
-      rm.phix = TRUE, compress = TRUE,
-      multithread = use_mt
-    )
+  # Auto-detect existing filtered files — skip filterAndTrim if they exist
+  existing_filtFs <- sort(list.files(filt_dir, pattern="_F_filt\\.fastq\\.gz$", full.names=TRUE))
+  skip_filter <- opt$skip_filter || length(existing_filtFs) > 0
+
+  if (skip_filter) {
+    filtFs <- existing_filtFs
+    if (length(filtFs) == 0) stop("--skip_filter: no filtered forward files found in ", filt_dir)
+    sample.names <- sub("_F_filt\\.fastq\\.gz$", "", basename(filtFs))
+    if (is_paired) {
+      filtRs <- sort(list.files(filt_dir, pattern="_R_filt\\.fastq\\.gz$", full.names=TRUE))
+      if (length(filtRs) != length(filtFs)) stop("Mismatched F/R filtered files in ", filt_dir)
+    }
+    log_msg("Filtered files exist, skipping filterAndTrim: ", length(filtFs), " samples\n")
+
+    # Build a synthetic filt_out matrix for the tracking table
+    filt_out <- matrix(0L, nrow=length(filtFs), ncol=2)
+    colnames(filt_out) <- c("reads.in", "reads.out")
+    rownames(filt_out) <- basename(filtFs)
+    keep <- rep(TRUE, length(filtFs))
+
   } else {
-    cat("Filtering and trimming (single-end)...\n")
-    filt_out <- filterAndTrim(
-      fnFs, filtFs,
-      trimLeft  = opt$trim_left_f,
-      truncLen  = opt$trunc_len_f,
-      maxN = 0, maxEE = 5, truncQ = 2,
-      rm.phix = TRUE, compress = TRUE,
-      multithread = use_mt
-    )
+    filtFs <- file.path(filt_dir, paste0(sample.names, "_F_filt.fastq.gz"))
+
+    if (is_paired) {
+      filtRs <- file.path(filt_dir, paste0(sample.names, "_R_filt.fastq.gz"))
+      log_msg("Filtering and trimming (paired-end)...\n")
+      log_msg("  truncLen=c(", opt$trunc_len_f, ",", opt$trunc_len_r, ") trimLeft=c(",
+          opt$trim_left_f, ",", opt$trim_left_r, ") truncQ=0 maxEE=c(5,5)\n", sep="")
+      filt_out <- filterAndTrim(
+        fnFs, filtFs, fnRs, filtRs,
+        trimLeft  = c(opt$trim_left_f, opt$trim_left_r),
+        truncLen  = c(opt$trunc_len_f, opt$trunc_len_r),
+        maxN = 0, maxEE = c(5, 5), truncQ = 0,
+        rm.phix = TRUE, compress = TRUE,
+        multithread = use_mt
+      )
+      log_msg("  Filter results:\n")
+      print(filt_out)
+    } else {
+      log_msg("Filtering and trimming (single-end)...\n")
+      filt_out <- filterAndTrim(
+        fnFs, filtFs,
+        trimLeft  = opt$trim_left_f,
+        truncLen  = opt$trunc_len_f,
+        maxN = 0, maxEE = 5, truncQ = 0,
+        rm.phix = TRUE, compress = TRUE,
+        multithread = use_mt
+      )
+    }
+
+    # Remove samples that had 0 reads pass filtering
+    keep <- filt_out[, "reads.out"] > 0
+    if (sum(keep) == 0) stop("No reads passed filtering for any sample")
+
+    log_msg(sum(keep), "of", length(keep), "samples passed filtering\n")
+    sample.names <- sample.names[keep]
+    filtFs <- filtFs[keep]
+    if (is_paired) filtRs <- filtRs[keep]
   }
-
-  # Remove samples that had 0 reads pass filtering
-  keep <- filt_out[, "reads.out"] > 0
-  if (sum(keep) == 0) stop("No reads passed filtering for any sample")
-
-  cat(sum(keep), "of", length(keep), "samples passed filtering\n")
-  sample.names <- sample.names[keep]
-  filtFs <- filtFs[keep]
-  if (is_paired) filtRs <- filtRs[keep]
 
   # ── Step 2: Learn Error Rates ────────────────────────────────────────────
 
-  cat("Learning error rates (forward)...\n")
-  errF <- learnErrors(filtFs, multithread=use_mt)
+  log_msg("Learning error rates (forward, randomize=TRUE)...\n")
+  errF <- learnErrors(filtFs, multithread=use_mt, randomize=TRUE)
 
   if (is_paired) {
-    cat("Learning error rates (reverse)...\n")
-    errR <- learnErrors(filtRs, multithread=use_mt)
+    log_msg("Learning error rates (reverse, randomize=TRUE)...\n")
+    errR <- learnErrors(filtRs, multithread=use_mt, randomize=TRUE)
   }
 
-  # ── Step 3: Denoise ──────────────────────────────────────────────────────
+  # ── Step 3: Dereplicate ────────────────────────────────────────────────
 
-  cat("Denoising forward reads...\n")
-  dadaFs <- dada(filtFs, err=errF, multithread=use_mt)
+  log_msg("Dereplicating forward reads (", length(filtFs), " samples)...\n", sep="")
+  t0 <- proc.time()[["elapsed"]]
+  derepFs <- derepFastq(filtFs)
+  names(derepFs) <- sample.names
+  log_msg("Forward dereplication done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
 
   if (is_paired) {
-    cat("Denoising reverse reads...\n")
-    dadaRs <- dada(filtRs, err=errR, multithread=use_mt)
+    log_msg("Dereplicating reverse reads (", length(filtRs), " samples)...\n", sep="")
+    t0 <- proc.time()[["elapsed"]]
+    derepRs <- derepFastq(filtRs)
+    names(derepRs) <- sample.names
+    log_msg("Reverse dereplication done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
   }
 
-  # ── Step 4: Merge (PE only) ──────────────────────────────────────────────
+  # ── Step 4: Denoise ──────────────────────────────────────────────────────
+
+  log_msg("Denoising forward reads (pool=", as.character(pool_opt), ")...\n", sep="")
+  t0 <- proc.time()[["elapsed"]]
+  dadaFs <- dada(derepFs, err=errF, multithread=use_mt, pool=pool_opt)
+  log_msg("Forward denoising done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
 
   if (is_paired) {
-    cat("Merging paired reads...\n")
-    merged <- mergePairs(dadaFs, filtFs, dadaRs, filtRs,
+    log_msg("Denoising reverse reads (pool=", as.character(pool_opt), ")...\n", sep="")
+    t0 <- proc.time()[["elapsed"]]
+    dadaRs <- dada(derepRs, err=errR, multithread=use_mt, pool=pool_opt)
+    log_msg("Reverse denoising done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
+  }
+
+  # ── Step 5: Merge (PE only) ──────────────────────────────────────────────
+
+  if (is_paired) {
+    log_msg("Merging paired reads...\n")
+    t0 <- proc.time()[["elapsed"]]
+    merged <- mergePairs(dadaFs, derepFs, dadaRs, derepRs,
                          minOverlap=opt$min_overlap,
                          maxMismatch=1)
     seqtab <- makeSequenceTable(merged)
+    log_msg("Merging done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
   } else {
     seqtab <- makeSequenceTable(dadaFs)
   }
 
-  cat("Sequence table:", nrow(seqtab), "samples,", ncol(seqtab), "ASVs\n")
+  log_msg("Sequence table:", nrow(seqtab), "samples,", ncol(seqtab), "ASVs\n")
 
-  # ── Step 5: Remove Chimeras ──────────────────────────────────────────────
+  # ── Step 6: Remove Chimeras ──────────────────────────────────────────────
 
-  cat("Removing chimeras...\n")
+  log_msg("Removing chimeras...\n")
+  t0 <- proc.time()[["elapsed"]]
   seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus",
                                        multithread=use_mt)
+  log_msg("Chimera removal done in ", round(proc.time()[["elapsed"]] - t0, 1), "s\n", sep="")
 
   asv_count <- ncol(seqtab.nochim)
   sample_count <- nrow(seqtab.nochim)
-  cat("After chimera removal:", sample_count, "samples,", asv_count, "ASVs\n")
+  log_msg("After chimera removal:", sample_count, "samples,", asv_count, "ASVs\n")
 
   if (asv_count == 0) stop("No ASVs survived chimera removal")
 
@@ -392,13 +467,13 @@ tryCatch({
 
   asv_path <- file.path(opt$output_dir, "asv_table.tsv")
   write.table(asv_table, asv_path, sep="\t", row.names=FALSE, quote=FALSE)
-  cat("Wrote:", asv_path, "\n")
+  log_msg("Wrote:", asv_path, "\n")
 
   # Read tracking table
   track_path <- file.path(opt$output_dir, "track_reads.tsv")
   track_df <- cbind(sample = rownames(track), as.data.frame(track))
   write.table(track_df, track_path, sep="\t", row.names=FALSE, quote=FALSE)
-  cat("Wrote:", track_path, "\n")
+  log_msg("Wrote:", track_path, "\n")
 
   # ── Success ──────────────────────────────────────────────────────────────
 
@@ -407,7 +482,7 @@ tryCatch({
     asv_count    = asv_count,
     sample_count = sample_count
   ), auto_unbox=TRUE)
-  cat("\n", status, "\n", sep="")
+  log_msg("\n", status, "\n", sep="")
   quit(status=0)
 
 }, error = function(e) {
@@ -415,6 +490,6 @@ tryCatch({
     status  = "error",
     message = conditionMessage(e)
   ), auto_unbox=TRUE)
-  cat("\n", status, "\n", sep="")
+  log_msg("\n", status, "\n", sep="")
   quit(status=1)
 })

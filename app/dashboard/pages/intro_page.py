@@ -88,7 +88,7 @@ layout = dbc.Container([
 
     # Header
     html.Div([
-        html.H2("16S Analyzer", className="mb-2"),
+        html.H2("16S Pipeline", className="mb-2"),
         html.P(
             "An end-to-end 16S rRNA amplicon analysis platform — from raw FASTQ "
             "files to publication-ready results.",

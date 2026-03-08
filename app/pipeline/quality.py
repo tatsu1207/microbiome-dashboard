@@ -27,7 +27,7 @@ def detect_truncation_params(
     trimmed_dir: Path,
     sequencing_type: str,
     variable_region: str | None,
-    min_overlap: int = 20,
+    min_overlap: int = 50,
     n_reads: int = 5000,
     primer_offset_f: int = 0,
     primer_offset_r: int = 0,
@@ -80,21 +80,34 @@ def detect_truncation_params(
 
     is_paired = sequencing_type == "paired-end" and r2_files
 
+    # Detect leading N bases that DADA2's maxN=0 would reject
+    trim_left_f = _detect_leading_n(r1_files[0], n_reads)
+    if trim_left_f:
+        log.info(f"R1: detected {trim_left_f} leading N bases, will trim")
+
     # Profile R1 quality
     log.info("Profiling R1 quality scores...")
-    r1_scores = _read_quality_scores(r1_files[0], n_reads, skip_bases=primer_offset_f)
+    r1_scores = _read_quality_scores(r1_files[0], n_reads, skip_bases=primer_offset_f + trim_left_f)
     r1_median_len = _median_read_length(r1_scores)
 
     if not is_paired:
         trunc_f = _quality_cutoff(r1_scores)
         r1_pass = _pass_rate_at(r1_scores, trunc_f)
         details = f"trunc_len_f={trunc_f} ({r1_pass:.0%} pass EE≤5)"
+        if trim_left_f:
+            details += f", trim_left_f={trim_left_f} (leading N)"
         log.info(f"Auto-detected: {details}")
-        return {"trunc_len_f": trunc_f, "trunc_len_r": 0, "details": details}
+        return {"trunc_len_f": trunc_f, "trunc_len_r": 0,
+                "trim_left_f": trim_left_f, "trim_left_r": 0,
+                "details": details}
 
     # Paired-end: profile R2 and compute insert length
+    trim_left_r = _detect_leading_n(r2_files[0], n_reads)
+    if trim_left_r:
+        log.info(f"R2: detected {trim_left_r} leading N bases, will trim")
+
     log.info("Profiling R2 quality scores...")
-    r2_scores = _read_quality_scores(r2_files[0], n_reads, skip_bases=primer_offset_r)
+    r2_scores = _read_quality_scores(r2_files[0], n_reads, skip_bases=primer_offset_r + trim_left_r)
     r2_median_len = _median_read_length(r2_scores)
 
     insert_len = None
@@ -112,7 +125,8 @@ def detect_truncation_params(
             f"insert {insert_mid}-{insert_len}bp (using upper bound)"
         )
 
-    # Quality-based truncation (where 10bp window mean drops below Q20)
+    # Quality-based truncation (where 10bp window mean drops below Q20,
+    # accounting for truncQ=2 per-read truncation)
     qual_trunc_f = _quality_cutoff(r1_scores)
     qual_trunc_r = _quality_cutoff(r2_scores)
 
@@ -123,11 +137,41 @@ def detect_truncation_params(
     log.info(f"Quality cutoff: R1={qual_trunc_f}, R2={qual_trunc_r}")
 
     if insert_len:
-        # Ensure minimum overlap — extend reads back if needed
+        # Cap truncation at insert length — reading past the insert means
+        # sequencing into adapter/primer, wasting the maxEE error budget.
+        # Allow a small buffer (10bp) for insert length variation.
+        max_useful = insert_len + 10
+        if trunc_f > max_useful:
+            log.info(f"Capping R1 trunc from {trunc_f} to {max_useful} (insert={insert_len})")
+            trunc_f = max_useful
+        if trunc_r > max_useful:
+            log.info(f"Capping R2 trunc from {trunc_r} to {max_useful} (insert={insert_len})")
+            trunc_r = max_useful
+
+        # Optimize: search for the truncation pair with best combined pass rate
+        # while maintaining minimum overlap.
         min_total = insert_len + min_overlap
+        best_combined = _pass_rate_at(r1_scores, trunc_f) * _pass_rate_at(r2_scores, trunc_r)
+        best_tf, best_tr = trunc_f, trunc_r
+
+        # Try shorter R2 lengths (R2 usually has worse quality)
+        for try_tr in range(trunc_r, _MIN_TRUNC - 1, -10):
+            # Ensure overlap: adjust R1 up if needed
+            try_tf = max(trunc_f, min_total - try_tr)
+            if try_tf > r1_median_len:
+                continue
+            r1p = _pass_rate_at(r1_scores, try_tf)
+            r2p = _pass_rate_at(r2_scores, try_tr)
+            combined = r1p * r2p
+            if combined > best_combined:
+                best_combined = combined
+                best_tf, best_tr = try_tf, try_tr
+
+        trunc_f, trunc_r = best_tf, best_tr
+
+        # Final overlap check — extend if needed
         if trunc_f + trunc_r < min_total:
             shortfall = min_total - (trunc_f + trunc_r)
-            # Extend R1 first (usually better quality), then R2
             extend_f = max(0, min(shortfall, r1_median_len - trunc_f))
             trunc_f += extend_f
             shortfall -= extend_f
@@ -152,6 +196,10 @@ def detect_truncation_params(
     if insert_len:
         overlap = trunc_f + trunc_r - insert_len
         details_parts.append(f"overlap={overlap}bp")
+    if trim_left_f:
+        details_parts.append(f"trim_left_f={trim_left_f} (leading N)")
+    if trim_left_r:
+        details_parts.append(f"trim_left_r={trim_left_r} (leading N)")
 
     details = ", ".join(details_parts)
     log.info(f"Auto-detected: {details}")
@@ -159,32 +207,93 @@ def detect_truncation_params(
     return {
         "trunc_len_f": trunc_f,
         "trunc_len_r": trunc_r,
+        "trim_left_f": trim_left_f,
+        "trim_left_r": trim_left_r,
         "details": details,
     }
+
+
+def _detect_leading_n(fastq_path: Path, n_reads: int = 500, check_first: int = 10) -> int:
+    """Detect N bases in the first few positions that would cause DADA2 maxN=0 to reject reads.
+
+    Checks the first `check_first` positions. If >50% of reads have an N
+    at any position within that window, returns trim length to remove it.
+
+    Returns the number of leading bases to trim (0 if no N issue).
+    """
+    opener = gzip.open if str(fastq_path).endswith(".gz") else open
+    # Count N occurrences at each of the first `check_first` positions
+    n_at_pos = [0] * check_first
+    total = 0
+    try:
+        with opener(fastq_path, "rt") as f:
+            for line_num, line in enumerate(f, 1):
+                if line_num % 4 == 2:  # sequence line
+                    seq = line.rstrip()
+                    for i in range(min(check_first, len(seq))):
+                        if seq[i] == "N":
+                            n_at_pos[i] += 1
+                    total += 1
+                    if total >= n_reads:
+                        break
+    except Exception:
+        return 0
+
+    if total == 0:
+        return 0
+
+    # Find the rightmost position where >50% of reads have N
+    trim_to = 0
+    for i in range(check_first):
+        if n_at_pos[i] / total >= 0.5:
+            trim_to = i + 1  # trim up to and including this position
+
+    return trim_to
 
 
 def _read_quality_scores(
     fastq_path: Path, n_reads: int = 5000, skip_bases: int = 0
 ) -> list[list[int]]:
-    """Read Phred+33 quality scores from first n_reads of a FASTQ(.gz) file."""
-    scores = []
+    """Read Phred+33 quality scores sampled evenly across a FASTQ(.gz) file.
+
+    Reads the entire file to count total reads, then samples n_reads evenly
+    spaced across the file. This avoids bias from Illumina's tendency to have
+    better quality at the start of a run.
+    """
     opener = gzip.open if str(fastq_path).endswith(".gz") else open
+
+    # First pass: collect ALL quality lines
+    all_quals = []
     try:
         with opener(fastq_path, "rt") as f:
             line_num = 0
             for line in f:
                 line_num += 1
                 if line_num % 4 == 0:
-                    qual = line.rstrip()
-                    phred = [ord(c) - 33 for c in qual]
-                    if skip_bases:
-                        phred = phred[skip_bases:]
-                    if phred:
-                        scores.append(phred)
-                    if len(scores) >= n_reads:
-                        break
+                    all_quals.append(line.rstrip())
     except Exception:
         pass
+
+    if not all_quals:
+        return []
+
+    # Subsample evenly across the file
+    total = len(all_quals)
+    if total <= n_reads:
+        indices = range(total)
+    else:
+        step = total / n_reads
+        indices = [int(i * step) for i in range(n_reads)]
+
+    scores = []
+    for idx in indices:
+        qual = all_quals[idx]
+        phred = [ord(c) - 33 for c in qual]
+        if skip_bases:
+            phred = phred[skip_bases:]
+        if phred:
+            scores.append(phred)
+
     return scores
 
 
@@ -225,10 +334,11 @@ def _quality_cutoff(quality_scores: list[list[int]], q_floor: int = _QUAL_FLOOR)
             cutoff = pos + 1  # truncate at this length (1-indexed)
             break
     else:
-        # Quality never reaches threshold — use minimum
         cutoff = _MIN_TRUNC
 
-    return max(_MIN_TRUNC, cutoff)
+    cutoff = max(_MIN_TRUNC, cutoff)
+
+    return cutoff
 
 
 def _pass_rate_at(quality_scores: list[list[int]], trunc_len: int, max_ee: float = 5.0) -> float:
@@ -236,6 +346,7 @@ def _pass_rate_at(quality_scores: list[list[int]], trunc_len: int, max_ee: float
 
     Reads shorter than trunc_len count as failures (DADA2 discards them).
     Default max_ee=5.0 matches DADA2's maxEE=c(5,5).
+    Uses truncQ=0 (disabled) to match DADA2 settings.
     """
     if not quality_scores or trunc_len <= 0:
         return 0.0
