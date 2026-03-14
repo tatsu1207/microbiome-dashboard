@@ -120,13 +120,14 @@ layout = dbc.Container(
                             [
                                 dbc.Input(
                                     id="input-threads",
-                                    type="text",
-                                    value="default",
-                                    placeholder="default",
-                                    style={"maxWidth": "120px"},
+                                    type="number",
+                                    value=max(1, MAX_CPUS - 1),
+                                    min=1,
+                                    max=MAX_CPUS,
+                                    style={"maxWidth": "200px"},
                                 ),
                                 dbc.InputGroupText(
-                                    f"default = samples x 2 (max {MAX_CPUS} cores)",
+                                    f"/ {MAX_CPUS} cores available",
                                     className="text-muted small",
                                 ),
                             ],
@@ -335,6 +336,44 @@ layout = dbc.Container(
         dcc.Download(id="download-history-biom"),
         dcc.Download(id="download-history-qc"),
         dcc.Download(id="download-history-log"),
+        dcc.Download(id="download-methods-txt"),
+        # Methods Text section
+        html.Div(
+            id="methods-text-section",
+            children=[
+                html.Hr(className="mt-4"),
+                html.H5("Methods Text"),
+                html.P(
+                    "Auto-generated Materials & Methods paragraph for your dataset. "
+                    "Select a completed dataset from the history above, then click Generate.",
+                    className="text-muted small",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            dcc.Dropdown(
+                                id="methods-dataset-select",
+                                placeholder="Select a completed dataset...",
+                            ),
+                            md=6,
+                        ),
+                        dbc.Col(
+                            dbc.Button(
+                                "Generate",
+                                id="btn-generate-methods",
+                                color="primary",
+                                size="sm",
+                                disabled=True,
+                            ),
+                            width="auto",
+                        ),
+                    ],
+                    align="center",
+                    className="mb-3",
+                ),
+                html.Div(id="methods-text-output"),
+            ],
+        ),
         # Stores and intervals
         dcc.Store(id="pipeline-active-dataset", storage_type="session"),
         dcc.Store(id="file-ids-map-store"),
@@ -853,6 +892,17 @@ def on_ps_check_all(select_all, ids):
 
 
 @dash_app.callback(
+    Output("input-threads", "value"),
+    Input("ps-checked-samples", "data"),
+)
+def update_default_threads(checked_samples):
+    """Update threads to samples x 2 when selection changes."""
+    if not checked_samples:
+        return max(1, MAX_CPUS - 1)
+    return min(len(checked_samples) * 2, max(1, MAX_CPUS - 1))
+
+
+@dash_app.callback(
     Output("sample-selection-summary", "children"),
     Output("btn-start-pipeline", "disabled"),
     Input("ps-checked-samples", "data"),
@@ -961,17 +1011,16 @@ def on_start_pipeline(
 
     # Parse threads
     threads_override = None
-    use_default_threads = True
-    if threads_val and str(threads_val).strip().lower() != "default":
-        use_default_threads = False
+    use_default_threads = False
+    if threads_val is not None:
         try:
-            threads_override = max(1, int(threads_val))
-        except ValueError:
+            threads_override = max(1, min(int(threads_val), MAX_CPUS))
+        except (ValueError, TypeError):
             return (
                 *no_change,
                 dbc.Alert(
                     f"Invalid CPU threads value: '{threads_val}'. "
-                    "Enter a number or 'default'.",
+                    "Enter a number.",
                     color="danger",
                 ),
                 no_update, no_update,
@@ -1096,10 +1145,10 @@ def on_start_pipeline(
     summary_card = dbc.Card(dbc.CardBody(card_items), className="mb-3")
 
     # ── 3. Compute thread count ───────────────────────────────────────
-    if use_default_threads:
-        threads = min(n_samples * 2, max(1, MAX_CPUS - 1))
-    else:
+    if threads_override is not None:
         threads = threads_override
+    else:
+        threads = max(1, MAX_CPUS - 1)
 
     # ── 4. Launch pipeline ────────────────────────────────────────────
     from app.pipeline.runner import launch_pipeline
@@ -1604,3 +1653,109 @@ def on_history_delete(n_clicks_list):
         shutil.rmtree(ds_path, ignore_errors=True)
 
     return _build_history_table()
+
+
+# ── Methods Text callbacks ───────────────────────────────────────────────────
+
+
+@dash_app.callback(
+    Output("methods-dataset-select", "options"),
+    Input("pipeline-history-table", "children"),
+)
+def populate_methods_dropdown(_history):
+    """Populate the methods text dataset dropdown with completed datasets."""
+    from app.db.database import SessionLocal
+    from app.db.models import Dataset
+
+    db = SessionLocal()
+    try:
+        datasets = (
+            db.query(Dataset)
+            .filter(Dataset.status == "complete")
+            .order_by(Dataset.created_at.desc())
+            .all()
+        )
+        return [
+            {
+                "label": f"#{ds.id} — {ds.name} ({ds.variable_region or '?'}, {ds.sample_count or '?'} samples)",
+                "value": ds.id,
+            }
+            for ds in datasets
+        ]
+    finally:
+        db.close()
+
+
+@dash_app.callback(
+    Output("btn-generate-methods", "disabled"),
+    Input("methods-dataset-select", "value"),
+)
+def enable_methods_btn(dataset_id):
+    return not dataset_id
+
+
+@dash_app.callback(
+    Output("methods-text-output", "children"),
+    Input("btn-generate-methods", "n_clicks"),
+    State("methods-dataset-select", "value"),
+    prevent_initial_call=True,
+)
+def on_generate_methods(n_clicks, dataset_id):
+    if not n_clicks or not dataset_id:
+        return no_update
+
+    from app.report.methods_text import generate_methods_text
+
+    text = generate_methods_text(dataset_id)
+
+    return html.Div(
+        [
+            dbc.Textarea(
+                id="methods-text-area",
+                value=text,
+                style={"height": "250px", "fontFamily": "serif", "fontSize": "14px"},
+                readOnly=True,
+                className="mb-2",
+            ),
+            dbc.Button(
+                "Copy to Clipboard",
+                id="btn-copy-methods",
+                color="outline-primary",
+                size="sm",
+                className="me-2",
+            ),
+            dbc.Button(
+                "Download as TXT",
+                id="btn-download-methods-txt",
+                color="outline-secondary",
+                size="sm",
+            ),
+            dcc.Clipboard(target_id="methods-text-area", className="d-none"),
+            html.Div(id="methods-copy-feedback"),
+        ]
+    )
+
+
+@dash_app.callback(
+    Output("methods-copy-feedback", "children"),
+    Input("btn-copy-methods", "n_clicks"),
+    State("methods-text-area", "value"),
+    prevent_initial_call=True,
+)
+def on_copy_methods(n_clicks, text):
+    if not n_clicks or not text:
+        return no_update
+    # The dcc.Clipboard handles actual copying; this just shows feedback
+    return dbc.Alert("Copied to clipboard!", color="success", duration=2000, className="mt-2")
+
+
+@dash_app.callback(
+    Output("download-methods-txt", "data"),
+    Input("btn-download-methods-txt", "n_clicks"),
+    State("methods-text-area", "value"),
+    prevent_initial_call=True,
+)
+def on_download_methods_txt(n_clicks, text):
+    if not n_clicks or not text:
+        return no_update
+    return dcc.send_string(text, filename="methods_text.txt")

@@ -29,6 +29,7 @@ data/combined/*
 data/exports/*
 data/picrust2_runs/*
 data/kegg_cache/*
+data/sra_cache/*
 !data/uploads/.gitkeep
 !data/datasets/.gitkeep
 !data/combined/.gitkeep
@@ -58,6 +59,9 @@ Thumbs.db
 *.log
 logs/
 run.pid
+
+# --- Private files ---
+vault/
 
 # --- Claude Code ---
 .claude/

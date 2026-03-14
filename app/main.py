@@ -32,6 +32,11 @@ import app.dashboard.pages.rare_asv_page  # noqa: F401
 import app.dashboard.pages.kegg_map_page  # noqa: F401
 import app.dashboard.pages.picrust2_page  # noqa: F401
 import app.dashboard.pages.sample_tree_page  # noqa: F401
+import app.dashboard.pages.sra_download_page  # noqa: F401
+import app.dashboard.pages.sra_submit_page  # noqa: F401
+import app.dashboard.pages.core_microbiome_page  # noqa: F401
+import app.dashboard.pages.venn_page  # noqa: F401
+import app.dashboard.pages.report_page  # noqa: F401
 
 
 # ── FastAPI application ───────────────────────────────────────────────────────

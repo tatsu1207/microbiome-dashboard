@@ -14,6 +14,7 @@ COMBINED_DIR = DATA_DIR / "combined"
 EXPORT_DIR = DATA_DIR / "exports"
 PICRUST2_RUNS_DIR = DATA_DIR / "picrust2_runs"
 REFERENCE_DIR = DATA_DIR / "references"
+SRA_CACHE_DIR = DATA_DIR / "sra_cache"
 R_SCRIPTS_DIR = PROJECT_DIR / "r_scripts"
 
 # --- Database ---

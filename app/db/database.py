@@ -11,6 +11,7 @@ from app.config import (
     DATABASE_URL,
     DATASET_DIR,
     EXPORT_DIR,
+    SRA_CACHE_DIR,
     UPLOAD_DIR,
 )
 from app.db.models import Base
@@ -52,7 +53,7 @@ def init_db():
     # Lightweight migrations for columns added after initial schema
     _migrate_add_columns()
     _backfill_primers_detected()
-    for d in [UPLOAD_DIR, DATASET_DIR, COMBINED_DIR, EXPORT_DIR]:
+    for d in [UPLOAD_DIR, DATASET_DIR, COMBINED_DIR, EXPORT_DIR, SRA_CACHE_DIR]:
         d.mkdir(parents=True, exist_ok=True)
 
 

@@ -263,6 +263,7 @@ BIOTOOLS_MAP=(
     "mafft:mafft"
     "fasttree:FastTree,fasttree"
     "bbmap:bbduk.sh"
+    "sra-tools:prefetch,fasterq-dump"
 )
 
 for tool_pair in "${BIOTOOLS_MAP[@]}"; do
@@ -340,6 +341,7 @@ PYTHON_PACKAGES=(
     "fpdf:fpdf2"
     "statsmodels:statsmodels"
     "dash_uploader:dash-uploader"
+    "matplotlib_venn:matplotlib-venn"
 )
 
 PYTHON_MISSING=()

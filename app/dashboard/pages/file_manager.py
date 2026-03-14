@@ -87,13 +87,22 @@ layout = dbc.Container(
                         [
                             dbc.Col(html.H5("Upload Sample Metadata", className="mb-0"), width="auto"),
                             dbc.Col(
-                                dbc.Button(
-                                    "Download Full Metadata (.tsv)",
-                                    id="fm-btn-dl-meta",
-                                    color="info",
-                                    size="sm",
-                                    disabled=True,
-                                ),
+                                [
+                                    dbc.Button(
+                                        "Download Template",
+                                        id="fm-btn-dl-template",
+                                        color="outline-secondary",
+                                        size="sm",
+                                        className="me-2",
+                                    ),
+                                    dbc.Button(
+                                        "Download Full Metadata (.tsv)",
+                                        id="fm-btn-dl-meta",
+                                        color="info",
+                                        size="sm",
+                                        disabled=True,
+                                    ),
+                                ],
                                 width="auto",
                                 className="ms-auto",
                             ),
@@ -113,7 +122,7 @@ layout = dbc.Container(
                             id="fm-upload-metadata",
                             children=html.Div(
                                 [
-                                    "Drag & drop a metadata .tsv file, or ",
+                                    "Drag & drop a metadata file (.csv or .tsv), or ",
                                     html.A("click to browse"),
                                 ]
                             ),
@@ -126,7 +135,7 @@ layout = dbc.Container(
                                 "cursor": "pointer",
                             },
                             multiple=False,
-                            accept=".tsv",
+                            accept=".tsv,.csv,.txt",
                         ),
                         html.Div(id="fm-meta-status", className="mt-3"),
                         html.Div(id="fm-meta-preview", className="mt-3"),
@@ -209,8 +218,9 @@ layout = dbc.Container(
             ],
             className="mb-4",
         ),
-        # Hidden download component
+        # Hidden download components
         dcc.Download(id="fm-download-metadata"),
+        dcc.Download(id="fm-download-template"),
     ],
     fluid=True,
 )
@@ -839,18 +849,21 @@ def on_metadata_upload(content, filename, trigger):
     if not content:
         return no_update, no_update, no_update
 
-    # Decode the TSV
+    # Decode the metadata file (auto-detect CSV or TSV)
     try:
         _, content_encoded = content.split(",", 1)
         decoded = base64.b64decode(content_encoded)
-        df = pd.read_csv(io.BytesIO(decoded), sep="\t")
+        text = decoded.decode("utf-8")
+        first_line = text.split("\n")[0]
+        sep = "\t" if ("\t" in first_line or (filename and filename.endswith(".tsv"))) else ","
+        df = pd.read_csv(io.StringIO(text), sep=sep)
     except Exception as e:
-        return dbc.Alert(f"Error parsing TSV: {e}", color="danger"), no_update, no_update
+        return dbc.Alert(f"Error parsing metadata file: {e}", color="danger"), no_update, no_update
 
     if df.empty or len(df.columns) < 2:
         return (
             dbc.Alert(
-                "TSV must have at least 2 columns (sample_name + metadata).",
+                "Metadata file must have at least 2 columns (sample_name + metadata).",
                 color="warning",
             ),
             no_update,
@@ -1011,6 +1024,43 @@ def on_download_metadata(n_clicks):
         df = df[cols]
 
         return dcc.send_data_frame(df.to_csv, "metadata.tsv", sep="\t", index=False)
+    finally:
+        db.close()
+
+
+# ── Callback 6b: Download metadata template CSV ──────────────────────────────
+
+
+@dash_app.callback(
+    Output("fm-download-template", "data"),
+    Input("fm-btn-dl-template", "n_clicks"),
+    prevent_initial_call=True,
+)
+def on_download_template(n_clicks):
+    """Generate a metadata template CSV with sample names pre-filled."""
+    if not n_clicks:
+        return no_update
+
+    db = SessionLocal()
+    try:
+        # Get all unique sample names from registered uploads
+        sample_names = (
+            db.query(FastqFile.sample_name)
+            .distinct()
+            .order_by(FastqFile.sample_name)
+            .all()
+        )
+        if not sample_names:
+            return no_update
+
+        names = [row.sample_name for row in sample_names]
+        df = pd.DataFrame({
+            "sample-id": names,
+            "group": [""] * len(names),
+            "treatment": [""] * len(names),
+        })
+
+        return dcc.send_data_frame(df.to_csv, "metadata_template.csv", index=False)
     finally:
         db.close()
 
