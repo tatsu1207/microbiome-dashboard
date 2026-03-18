@@ -88,9 +88,15 @@ RUN conda run -n maaslin2_16S Rscript -e " \
     remotes::install_github('zhouhj1994/LinDA', upgrade='never', INSTALL_opts='--no-lock')"
 
 # ── Conda environment 5: picrust2_16S ─────────────────────────────────────
-RUN mamba create -n picrust2_16S --override-channels -c conda-forge -c bioconda \
-    picrust2 -y && \
-    mamba clean -afy
+# PICRUSt2 has no linux-aarch64 package on bioconda; skip on arm64 builds
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        mamba create -n picrust2_16S --override-channels -c conda-forge -c bioconda \
+            picrust2 -y && \
+        mamba clean -afy; \
+    else \
+        echo "Skipping PICRUSt2 on $TARGETARCH (no bioconda package available)"; \
+    fi
 
 # ── Download SILVA 138.1 references to a staging location ─────────────────
 # Stored in /opt/silva so they can be copied into the data volume at first run
