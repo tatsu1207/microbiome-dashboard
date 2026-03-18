@@ -48,7 +48,7 @@ The fastest way to run 16S Pipeline on **any operating system** (Windows, macOS,
 ### Requirements
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine (Linux)
-- **RAM**: 8 GB minimum, 16 GB recommended (PICRUSt2 needs 11 GB+)
+- **RAM**: 8 GB minimum, 16 GB recommended (PICRUSt2 needs 11 GB+). Docker Desktop defaults to only ~4 GB — increase it in Docker Desktop → **Settings** → **Resources** → **Memory**
 - **Disk**: ~15 GB for the Docker image
 
 ### Windows
