@@ -18,6 +18,30 @@ from app.dashboard.app import app as dash_app
 
 MAX_CPUS = os.cpu_count() or 1
 
+
+_picrust2_available: bool | None = None
+
+
+def _is_picrust2_available() -> bool:
+    """Check whether the picrust2_16S conda env has picrust2 installed.
+
+    Result is cached after first call to avoid repeated subprocess spawns.
+    """
+    global _picrust2_available
+    if _picrust2_available is not None:
+        return _picrust2_available
+    import subprocess
+    from app.config import PICRUST2_ENV_NAME
+    try:
+        result = subprocess.run(
+            ["conda", "run", "-n", PICRUST2_ENV_NAME, "which", "picrust2_pipeline.py"],
+            capture_output=True, text=True, timeout=10,
+        )
+        _picrust2_available = result.returncode == 0
+    except Exception:
+        _picrust2_available = False
+    return _picrust2_available
+
 # Compute RAM-aware default for hint text
 def _default_picrust2_threads() -> int:
     """RAM-aware default: each PICRUSt2 HSP worker uses ~2 GB."""
@@ -58,7 +82,33 @@ def get_layout():
     Pre-renders the history table server-side so it's always visible,
     and includes a one-shot interval to restore active-run progress.
     """
+    picrust2_available = _is_picrust2_available()
     dataset_options = _get_completed_datasets()
+
+    # Show unavailability banner when PICRUSt2 is not installed
+    unavailable_banner = []
+    if not picrust2_available:
+        unavailable_banner = [
+            dbc.Alert(
+                [
+                    html.H5("PICRUSt2 is not available", className="alert-heading"),
+                    html.P(
+                        "The PICRUSt2 conda environment is not installed. "
+                        "This typically happens on ARM64/Apple Silicon systems "
+                        "where PICRUSt2 has no compatible package available.",
+                        className="mb-2",
+                    ),
+                    html.P(
+                        "All other features of 16S Pipeline work normally. "
+                        "PICRUSt2 analysis pages (Pathway Comparison, KEGG Map) "
+                        "can still be used if you have pre-computed PICRUSt2 output.",
+                        className="mb-0",
+                    ),
+                ],
+                color="warning",
+                className="mb-4",
+            ),
+        ]
 
     return dbc.Container(
         [
@@ -70,6 +120,7 @@ def get_layout():
                 "Produces EC, KO (optional), and MetaCyc pathway predictions.",
                 className="text-muted mb-4",
             ),
+            *unavailable_banner,
             # ── DADA2 Dataset Selector ───────────────────────────────────
             dbc.Label("Use DADA2 Dataset", className="fw-bold"),
             dcc.Dropdown(
@@ -77,7 +128,7 @@ def get_layout():
                 options=dataset_options,
                 placeholder="Select a completed DADA2 run..." if dataset_options
                 else "No completed DADA2 runs available",
-                disabled=not dataset_options,
+                disabled=not dataset_options or not picrust2_available,
                 className="mb-2",
             ),
             html.Div(
@@ -101,6 +152,7 @@ def get_layout():
                     "borderRadius": "5px",
                     "borderColor": "#555",
                 },
+                disabled=not picrust2_available,
                 multiple=False,
                 accept=".biom,application/octet-stream,application/x-hdf5",
             ),
