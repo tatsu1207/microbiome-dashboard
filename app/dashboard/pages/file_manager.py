@@ -14,7 +14,14 @@ from dash import ALL, Input, Output, State, ctx, dcc, html, no_update
 from app.config import UPLOAD_DIR
 from app.dashboard.app import app as dash_app
 from app.db.database import SessionLocal
-from app.db.models import FastqFile, Upload, UploadMetadata
+from app.db.models import (
+    DatasetFastqFile,
+    FastqFile,
+    Sample,
+    SampleMetadata,
+    Upload,
+    UploadMetadata,
+)
 from app.pipeline.detect import (
     PRIMERS,
     _primer_matches,
@@ -59,10 +66,12 @@ layout = dbc.Container(
                             className="mt-2",
                             style={"maxWidth": "400px"},
                         ),
-                        # Hidden button kept for callback wiring
                         dbc.Button(
+                            "Register Files",
                             id="fm-btn-register",
-                            style={"display": "none"},
+                            color="success",
+                            className="mt-2",
+                            disabled=True,
                         ),
                         html.Div(id="fm-upload-status", className="mt-3"),
                     ]
@@ -75,8 +84,6 @@ layout = dbc.Container(
         dcc.Store(id="fm-sort-field", data="sample_name"),
         dcc.Store(id="fm-sort-asc", data=True),
         dcc.Store(id="fm-checked-samples", data=[]),
-        dcc.Store(id="fm-pending-file-count", data=0),
-        dcc.Interval(id="fm-register-interval", interval=2000, disabled=True),
         dcc.Download(id="fm-download-meta-selected"),
         dcc.ConfirmDialog(id="fm-confirm-delete", message=""),
         # ── Metadata Upload ──────────────────────────────────────────────
@@ -87,22 +94,12 @@ layout = dbc.Container(
                         [
                             dbc.Col(html.H5("Upload Sample Metadata", className="mb-0"), width="auto"),
                             dbc.Col(
-                                [
-                                    dbc.Button(
-                                        "Download Template",
-                                        id="fm-btn-dl-template",
-                                        color="outline-secondary",
-                                        size="sm",
-                                        className="me-2",
-                                    ),
-                                    dbc.Button(
-                                        "Download Full Metadata (.tsv)",
-                                        id="fm-btn-dl-meta",
-                                        color="info",
-                                        size="sm",
-                                        disabled=True,
-                                    ),
-                                ],
+                                dbc.Button(
+                                    "Download Template",
+                                    id="fm-btn-dl-template",
+                                    color="outline-secondary",
+                                    size="sm",
+                                ),
                                 width="auto",
                                 className="ms-auto",
                             ),
@@ -162,7 +159,7 @@ layout = dbc.Container(
                                         className="me-2",
                                     ),
                                     dbc.Button(
-                                        "Metadata",
+                                        "Download Metadata",
                                         id="fm-btn-dl-meta-selected",
                                         color="info",
                                         size="sm",
@@ -219,7 +216,6 @@ layout = dbc.Container(
             className="mb-4",
         ),
         # Hidden download components
-        dcc.Download(id="fm-download-metadata"),
         dcc.Download(id="fm-download-template"),
     ],
     fluid=True,
@@ -529,70 +525,51 @@ def on_file_uploaded(file_paths):
     )
 
 
-# ── Callback 1b: Start debounce timer when files arrive ─────────────────────
+# ── Callback 1b: Enable Register button when study is filled + files uploaded ─
 
 
 @dash_app.callback(
-    Output("fm-register-interval", "disabled"),
-    Output("fm-pending-file-count", "data"),
     Output("fm-btn-register", "disabled"),
+    Input("fm-study-name", "value"),
     Input("fm-upload-file-status", "children"),
-    State("fm-du-upload", "upload_id"),
     prevent_initial_call=True,
 )
-def on_file_arrived(file_status, du_upload_id):
-    """When a new file finishes uploading, (re)start the debounce interval."""
-    if not file_status or not du_upload_id:
-        return no_update, no_update, no_update
-    staging_dir = UPLOAD_DIR / du_upload_id
-    if not staging_dir.exists():
-        return no_update, no_update, no_update
-    n = sum(
-        1 for f in staging_dir.iterdir()
-        if f.is_file() and (f.name.endswith(".fastq.gz") or f.name.endswith(".fq.gz"))
-    )
-    # Store current count and enable the 2s interval
-    return False, n, no_update
+def toggle_register_button(study_name, file_status):
+    """Enable the Register button only when study has a value and files are uploaded."""
+    has_study = bool(study_name and study_name.strip())
+    has_files = bool(file_status)
+    return not (has_study and has_files)
 
 
-# ── Callback 1c: Debounced auto-registration ────────────────────────────────
+# ── Callback 1c: Register files on button click ─────────────────────────────
 
 
 @dash_app.callback(
     Output("fm-upload-status", "children"),
     Output("fm-upload-trigger", "data"),
-    Output("fm-register-interval", "disabled", allow_duplicate=True),
-    Output("fm-pending-file-count", "data", allow_duplicate=True),
-    Input("fm-register-interval", "n_intervals"),
+    Input("fm-btn-register", "n_clicks"),
     State("fm-du-upload", "upload_id"),
     State("fm-study-name", "value"),
     State("fm-upload-trigger", "data"),
-    State("fm-pending-file-count", "data"),
     prevent_initial_call=True,
 )
-def on_register_upload(n_intervals, du_upload_id, study_name, trigger, prev_count):
-    """Register once the file count has stabilised (no new files for 2s)."""
-    if not du_upload_id:
-        return no_update, no_update, True, no_update
+def on_register_upload(n_clicks, du_upload_id, study_name, trigger):
+    """Register uploaded files when the user clicks Register."""
+    if not n_clicks or not du_upload_id:
+        return no_update, no_update
 
     staging_dir = UPLOAD_DIR / du_upload_id
     if not staging_dir.exists():
-        return no_update, no_update, True, no_update
+        return no_update, no_update
 
-    # Count current files
     staged_files = [
         f for f in sorted(staging_dir.iterdir())
         if f.is_file() and (f.name.endswith(".fastq.gz") or f.name.endswith(".fq.gz"))
     ]
-    current_count = len(staged_files)
 
     if not staged_files:
         shutil.rmtree(staging_dir, ignore_errors=True)
-        return no_update, no_update, True, no_update
-
-    # If count changed since last tick, wait another cycle
-    if current_count != prev_count:
-        return no_update, no_update, no_update, current_count
+        return no_update, no_update
 
     saved_filenames = [f.name for f in staged_files]
 
@@ -622,8 +599,6 @@ def on_register_upload(n_intervals, du_upload_id, study_name, trigger, prev_coun
                 color="danger",
             ),
             no_update,
-            True,
-            0,
         )
 
     # Move files from staging to flat UPLOAD_DIR
@@ -722,7 +697,7 @@ def on_register_upload(n_intervals, du_upload_id, study_name, trigger, prev_coun
         db.commit()
     except Exception as e:
         db.rollback()
-        return dbc.Alert(f"Database error: {e}", color="danger"), no_update, True, 0
+        return dbc.Alert(f"Database error: {e}", color="danger"), no_update
     finally:
         db.close()
 
@@ -751,8 +726,6 @@ def on_register_upload(n_intervals, du_upload_id, study_name, trigger, prev_coun
     return (
         dbc.Alert(alert_children, color="success"),
         (trigger or 0) + 1,
-        True,
-        0,
     )
 
 
@@ -950,6 +923,44 @@ def on_metadata_upload(content, filename, trigger):
                             )
                         )
 
+        # Propagate to SampleMetadata for any datasets already created
+        for uid in upload_ids:
+            upload_samples = set(
+                f.sample_name for f in all_fastq if f.upload_id == uid
+            )
+            if not (upload_samples & meta_samples):
+                continue
+            # Find datasets linked to this upload's files
+            dataset_ids = (
+                db.query(DatasetFastqFile.dataset_id)
+                .join(FastqFile, DatasetFastqFile.fastq_file_id == FastqFile.id)
+                .filter(FastqFile.upload_id == uid)
+                .distinct()
+                .all()
+            )
+            for (ds_id,) in dataset_ids:
+                samples = db.query(Sample).filter(Sample.dataset_id == ds_id).all()
+                sample_map = {s.sample_name: s.id for s in samples}
+                for _, row in df.iterrows():
+                    sname = str(row[sample_col])
+                    sid = sample_map.get(sname)
+                    if not sid:
+                        continue
+                    # Delete existing metadata for this sample then insert
+                    db.query(SampleMetadata).filter(
+                        SampleMetadata.sample_id == sid,
+                    ).delete()
+                    for col in meta_cols:
+                        val = row[col]
+                        if pd.notna(val):
+                            db.add(
+                                SampleMetadata(
+                                    sample_id=sid,
+                                    key=col,
+                                    value=str(val),
+                                )
+                            )
+
         db.commit()
 
         # Preview table
@@ -973,62 +984,7 @@ def on_metadata_upload(content, filename, trigger):
         db.close()
 
 
-# ── Callback 5: Enable/disable metadata download button ──────────────────────
-
-
-@dash_app.callback(
-    Output("fm-btn-dl-meta", "disabled"),
-    Input("fm-upload-trigger", "data"),
-    Input("url", "pathname"),
-)
-def toggle_meta_download(trigger, pathname):
-    """Enable download button when metadata exists."""
-    if pathname != "/files":
-        return no_update
-    db = SessionLocal()
-    try:
-        has_meta = db.query(UploadMetadata).first() is not None
-        return not has_meta
-    finally:
-        db.close()
-
-
-# ── Callback 6: Download full metadata TSV ───────────────────────────────────
-
-
-@dash_app.callback(
-    Output("fm-download-metadata", "data"),
-    Input("fm-btn-dl-meta", "n_clicks"),
-    prevent_initial_call=True,
-)
-def on_download_metadata(n_clicks):
-    """Export all stored metadata as a TSV file."""
-    if not n_clicks:
-        return no_update
-
-    db = SessionLocal()
-    try:
-        rows = db.query(UploadMetadata).order_by(UploadMetadata.sample_name).all()
-        if not rows:
-            return no_update
-
-        # Pivot to dataframe
-        data = {}
-        for meta in rows:
-            if meta.sample_name not in data:
-                data[meta.sample_name] = {"sample_name": meta.sample_name}
-            data[meta.sample_name][meta.key] = meta.value
-
-        df = pd.DataFrame(data.values())
-        cols = ["sample_name"] + [c for c in df.columns if c != "sample_name"]
-        df = df[cols]
-
-        return dcc.send_data_frame(df.to_csv, "metadata.tsv", sep="\t", index=False)
-    finally:
-        db.close()
-
-
-# ── Callback 6b: Download metadata template CSV ──────────────────────────────
+# ── Callback 5: Download metadata template CSV ───────────────────────────────
 
 
 @dash_app.callback(
@@ -1090,9 +1046,9 @@ def on_row_check(values, ids):
             False,
             f"Delete Selected ({n})",
             False,
-            f"Metadata ({n})",
+            f"Download Metadata ({n})",
         )
-    return checked, True, "Delete Selected", True, "Metadata"
+    return checked, True, "Delete Selected", True, "Download Metadata"
 
 
 # ── Callback 8: Select All checkbox ──────────────────────────────────────

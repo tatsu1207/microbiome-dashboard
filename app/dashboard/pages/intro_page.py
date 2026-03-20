@@ -210,16 +210,13 @@ layout = dbc.Container([
             html.Pre(
                 "git clone https://github.com/tatsu1207/16S-Pipeline.git && cd 16S-Pipeline\n"
                 "\n"
-                "# Linux\n"
+                "# Native install (Linux / WSL2)\n"
                 "bash setup_ubuntu.sh\n"
                 "\n"
-                "# Windows (WSL2)\n"
-                "bash setup_wsl2.sh\n"
+                "# Or use Docker (any OS)\n"
+                "docker compose up -d\n"
                 "\n"
-                "# macOS (Apple Silicon)\n"
-                "bash setup_mac.sh\n"
-                "\n"
-                "# Start the server\n"
+                "# Start the server (native install)\n"
                 "conda activate microbiome_16S\n"
                 "./run.sh",
                 className="mb-0",

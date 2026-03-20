@@ -128,7 +128,7 @@ docker volume inspect 16s-pipeline_pipeline-data
 
 ## Prerequisites
 
-- **Operating System**: Ubuntu/Debian Linux, Windows (via WSL2), or macOS (Apple Silicon)
+- **Operating System**: Ubuntu/Debian Linux or Windows (via WSL2). For macOS, use [Docker](#quick-start-docker).
 - **Conda**: Miniforge recommended ([install guide](https://github.com/conda-forge/miniforge))
 - **RAM**: 8 GB minimum, 16 GB recommended (16 GB required for PICRUSt2)
 - **Disk Space**: ~10 GB for software + reference databases
@@ -163,18 +163,12 @@ The script also:
 - Skips any component that is already installed (safe to re-run)
 
 ```bash
-# Linux (Ubuntu/Debian)
 chmod +x setup_ubuntu.sh
 ./setup_ubuntu.sh
-
-# Windows (WSL2) -- see "Windows WSL2 Setup" section below first
-chmod +x setup_wsl2.sh
-./setup_wsl2.sh
-
-# macOS (Apple Silicon)
-chmod +x setup_mac.sh
-./setup_mac.sh
 ```
+
+> For Windows users: install WSL2 with Ubuntu first (see [Windows WSL2 Setup](#windows-wsl2-setup) below), then run the same `setup_ubuntu.sh` script inside WSL2.
+> For macOS/Windows users who prefer not to install natively: use the [Docker installation](#quick-start-docker) instead.
 
 > Expected time: 15-30 minutes depending on internet speed and system.
 
@@ -278,9 +272,7 @@ uvicorn app.main:app --reload --reload-exclude data --host 0.0.0.0 --port 8050
 ├── Dockerfile                   # Docker image build
 ├── docker-compose.yml           # One-command Docker deployment
 ├── docker-entrypoint.sh         # Docker container startup script
-├── setup_ubuntu.sh              # Setup script for Linux (Ubuntu/Debian)
-├── setup_wsl2.sh                # Setup script for Windows (WSL2)
-├── setup_mac.sh                 # Setup script for macOS (Apple Silicon)
+├── setup_ubuntu.sh              # Setup script for Linux (Ubuntu/Debian/WSL2)
 ├── run.sh                       # Start the application (native install)
 ├── environment.yml              # Conda environment specification
 ├── requirements.txt             # Python dependencies (pip)
@@ -339,8 +331,8 @@ After restart, Ubuntu will open automatically (or search for "Ubuntu" in the Sta
 sudo apt update && sudo apt upgrade -y
 git clone https://github.com/tatsu1207/16S-Pipeline.git
 cd 16S-Pipeline
-chmod +x setup_wsl2.sh
-./setup_wsl2.sh
+chmod +x setup_ubuntu.sh
+./setup_ubuntu.sh
 ```
 
 ### Tips for WSL
@@ -353,24 +345,7 @@ chmod +x setup_wsl2.sh
 
 ## macOS Setup
 
-Requires macOS with Apple Silicon (M1/M2/M3/M4).
-
-### Step 1: Install Xcode Command Line Tools
-
-```bash
-xcode-select --install
-```
-
-### Step 2: Clone and run the macOS setup script
-
-```bash
-git clone https://github.com/tatsu1207/16S-Pipeline.git
-cd 16S-Pipeline
-chmod +x setup_mac.sh
-./setup_mac.sh
-```
-
-> Note: PICRUSt2 on Apple Silicon runs via Rosetta 2 emulation (osx-64 environment). This is handled automatically by the setup script.
+For macOS users, we recommend the [Docker installation](#quick-start-docker) — it works on both Intel and Apple Silicon with no additional configuration.
 
 ---
 
@@ -410,8 +385,8 @@ This deletes all uploaded data, pipeline outputs, and the database.
 
 ```bash
 eval "$($HOME/miniforge3/bin/conda shell.bash hook)"
-conda init bash  # or: conda init zsh (macOS)
-source ~/.bashrc  # or: source ~/.zshrc (macOS)
+conda init bash
+source ~/.bashrc
 ```
 
 ### R package installation fails (DADA2)
@@ -426,7 +401,7 @@ Rscript -e 'BiocManager::install("dada2", force=TRUE)'
 ### "Permission denied" on setup script
 
 ```bash
-chmod +x setup_ubuntu.sh  # or setup_wsl2.sh / setup_mac.sh
+chmod +x setup_ubuntu.sh
 ```
 
 ### Port already in use
