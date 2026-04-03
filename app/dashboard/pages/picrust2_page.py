@@ -715,8 +715,8 @@ def _build_history_table():
             if has_output else ""
         )
 
-        # Delete button — disabled for active runs
-        is_active = r.status in ("pending", "processing")
+        # Delete button — always enabled
+        is_active = False
         del_cell = html.Td(
             dbc.Button(
                 "x",
@@ -905,9 +905,7 @@ def on_p2_history_delete(n_clicks_list):
         if not run:
             return _build_history_table()
 
-        # Don't delete active jobs
-        if run.status in ("pending", "processing"):
-            return no_update
+        # Allow deletion of stuck "processing" jobs — just proceed
 
         db.delete(run)
         db.commit()

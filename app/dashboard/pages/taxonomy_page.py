@@ -113,7 +113,8 @@ def get_layout():
             dbc.Col([
                 dbc.Spinner([
                     html.Div(id="tx-error", className="mb-2"),
-                    dcc.Graph(id="tx-heatmap", style={"display": "none"}),
+                    dcc.Graph(id="tx-heatmap", style={"display": "none"},
+                             config={"toImageButtonOptions": {"format": "svg", "scale": 2}}),
                     html.Div(id="tx-download-area"),
                 ], color="primary"),
             ], md=8),
@@ -477,3 +478,5 @@ def on_download(n_clicks, csv_data):
     if csv_data:
         return dcc.send_string(csv_data, "taxonomy_composition.csv")
     return no_update
+
+

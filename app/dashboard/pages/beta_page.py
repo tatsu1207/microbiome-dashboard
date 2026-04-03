@@ -159,7 +159,8 @@ def get_layout():
                 ]),
                 html.Div(id="bd-pairwise-table"),
                 html.Div(id="bd-permanova-table"),
-                dcc.Graph(id="bd-scatter", style=HIDDEN),
+                dcc.Graph(id="bd-scatter", style=HIDDEN,
+                         config={"toImageButtonOptions": {"format": "svg", "scale": 2}}),
             ], md=8),
         ]),
     ], fluid=True)
@@ -349,6 +350,7 @@ def on_run(n_clicks, biom_path, meta_json, sid_col, dist_metric, ord_method,
     bar_zero = 0
     bar_label = ""
     log_clear = ""
+
 
     if not all([biom_path, meta_json, dist_metric]):
         return (loading_done, no_fig, no_style, no_perm,
@@ -641,3 +643,5 @@ def _hex_to_rgb(hex_color: str) -> str:
     """Convert '#3498db' to '52, 152, 219'."""
     h = hex_color.lstrip("#")
     return ", ".join(str(int(h[i:i+2], 16)) for i in (0, 2, 4))
+
+

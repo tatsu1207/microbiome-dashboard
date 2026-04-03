@@ -122,7 +122,7 @@ dash_app.clientside_callback(
         plots.forEach(function(plot) {
             if (plot._fullLayout) {
                 Plotly.relayout(plot, {
-                    "paper_bgcolor": "rgba(0,0,0,0)",
+                    "paper_bgcolor": isDark ? "rgba(0,0,0,0)" : "rgba(255,255,255,1)",
                     "plot_bgcolor": isDark ? "rgba(0,0,0,0)" : "rgba(255,255,255,1)",
                     "font.color": isDark ? "#fff" : "#000",
                     "xaxis.gridcolor": isDark ? "#444" : "#ddd",
@@ -131,7 +131,12 @@ dash_app.clientside_callback(
             }
         });
 
-        // Button label
+        // Button label and color
+        var btn = document.getElementById("theme-toggle-btn");
+        if (btn) {
+            btn.className = btn.className
+                .replace(/btn-outline-(light|dark)/g, "btn-outline-" + (theme === "dark" ? "light" : "dark"));
+        }
         return theme === "dark" ? "Light" : "Dark";
     }
     """,

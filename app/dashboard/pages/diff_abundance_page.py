@@ -229,7 +229,8 @@ def get_layout():
                 dbc.Spinner([
                     html.Div(id="da-error", className="mb-2"),
                     html.Div(id="da-summary", className="mb-2"),
-                    dcc.Graph(id="da-volcano", style={"display": "none"}),
+                    dcc.Graph(id="da-volcano", style={"display": "none"},
+                             config={"toImageButtonOptions": {"format": "svg", "scale": 2}}),
                     html.Div(id="da-results-table"),
                     html.Div(id="da-download-area"),
                 ], color="primary"),

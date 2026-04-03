@@ -108,7 +108,8 @@ def get_layout():
             dbc.Col([
                 dbc.Spinner([
                     html.Div(id="ad-error", className="mb-2"),
-                    dcc.Graph(id="ad-boxplot", style={"display": "none"}),
+                    dcc.Graph(id="ad-boxplot", style={"display": "none"},
+                             config={"toImageButtonOptions": {"format": "svg", "scale": 2}}),
                     html.Div(id="ad-stats-table"),
                     html.Div(id="ad-download-area"),
                 ], color="primary"),
@@ -364,7 +365,6 @@ def on_run(n_clicks, biom_path, meta_json, sid_col, metrics, group_col):
                 color="dark", size="sm",
             ))
 
-        # Download area
         dl = html.Div([
             dcc.Download(id="ad-download"),
             dbc.Button("Download Diversity Table (CSV)", id="ad-btn-download",
@@ -403,3 +403,5 @@ def on_download(n_clicks, csv_data):
     if csv_data:
         return dcc.send_string(csv_data, "alpha_diversity.csv")
     return no_update
+
+

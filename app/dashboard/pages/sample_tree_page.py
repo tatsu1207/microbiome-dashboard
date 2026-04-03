@@ -718,7 +718,7 @@ def _build_dendrogram(dn, group_col, meta_json, sid_col):
 
     fig.update_layout(
         template="plotly_dark",
-        title="Bray-Curtis UPGMA Dendrogram",
+        title=dict(text="Bray-Curtis UPGMA Dendrogram", y=0.98, yanchor="top"),
         xaxis=dict(title="Bray-Curtis Distance", side="top", zeroline=False),
         yaxis=dict(
             tickvals=leaf_y,

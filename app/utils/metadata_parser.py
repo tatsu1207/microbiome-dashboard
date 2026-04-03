@@ -69,7 +69,7 @@ def parse_metadata(
         result["errors"].append("File contains no data rows.")
         return result
 
-    # Find sample-id column
+    # Find sample-id column: prefer a known name, otherwise use the first column
     sample_col = None
     for col in df.columns:
         if _normalize_col(col) == _NORMALIZED_SAMPLE_ID:
@@ -77,13 +77,8 @@ def parse_metadata(
             break
 
     if sample_col is None:
-        result["valid"] = False
-        result["errors"].append(
-            "Missing required column: 'sample-id' "
-            "(also accepts 'sample_id', 'SampleID', '#SampleID')"
-        )
-        result["df"] = df
-        return result
+        # Fall back to the first column as the sample identifier
+        sample_col = df.columns[0]
 
     # Check for empty sample IDs
     empty_mask = df[sample_col].str.strip() == ""
