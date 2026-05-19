@@ -37,6 +37,7 @@ A web-based tool for processing, managing, and visualizing 16S rRNA amplicon seq
 - [Windows WSL2 Setup](#windows-wsl2-setup)
 - [macOS Setup](#macos-setup)
 - [Troubleshooting](#troubleshooting)
+- [Citation](#citation)
 - [License](#license)
 
 ---
@@ -437,6 +438,25 @@ swap=8GB
 Then restart WSL from PowerShell: `wsl --shutdown`
 
 > The pipeline (FastQC, Cutadapt, DADA2, taxonomy, phylogeny) works fine with 8 GB. Only PICRUSt2 requires 16 GB. If PICRUSt2 fails, the rest of the pipeline still completes -- you can re-run PICRUSt2 later from the Pipeline Status page.
+
+---
+
+## Citation
+
+If you use 16S Pipeline in your research, please cite:
+
+> Unno T. (2026). 16S-Pipeline: A comprehensive web-based platform for end-to-end 16S rRNA amplicon sequencing analysis. *Journal of Microbiology*. Epub ahead of print. https://doi.org/10.71150/jm.2603014
+
+```bibtex
+@article{unno2026sixteenspipeline,
+  title={16S-Pipeline: A comprehensive web-based platform for end-to-end 16S rRNA amplicon sequencing analysis},
+  author={Unno, Tatsuya},
+  journal={Journal of Microbiology},
+  year={2026},
+  doi={10.71150/jm.2603014},
+  note={Epub ahead of print}
+}
+```
 
 ---
 
