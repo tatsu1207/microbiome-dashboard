@@ -44,13 +44,14 @@ A web-based tool for processing, managing, and visualizing 16S rRNA amplicon seq
 
 ## Quick Start (Docker)
 
-The fastest way to run 16S Pipeline on **any operating system** (Windows, macOS, Linux). No conda, R, or system libraries needed -- everything is packaged in a single Docker image.
+The fastest way to run 16S Pipeline on **any operating system** (Windows, macOS, Linux). No conda, R, or system libraries needed -- everything is packaged in a single Docker image. See the [Tutorial](TUTORIAL.md) for a step-by-step guide with example data.
 
 ### Requirements
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Windows/macOS) or Docker Engine (Linux)
 - **RAM**: 8 GB minimum, 16 GB recommended (PICRUSt2 needs 11 GB+). Docker Desktop defaults to only ~4 GB — increase it in Docker Desktop → **Settings** → **Resources** → **Memory**
 - **Disk**: ~15 GB for the Docker image
+- **Note**: PICRUSt2-related features are not available on Apple Silicon (ARM64)
 
 ### Windows
 
@@ -85,18 +86,21 @@ docker compose up -d
 
 3. Open **http://localhost:8016** in your browser.
 
+> **Note**: PICRUSt2-related analysis (functional prediction, pathway analysis, KEGG maps) is not available on Apple Silicon (ARM64) due to lack of native support.
+
 ### Linux
 
-```bash
-# Install Docker Engine if not already installed:
-# https://docs.docker.com/engine/install/
+1. Install [Docker Engine](https://docs.docker.com/engine/install/) if not already installed.
 
+2. Run:
+
+```bash
 mkdir 16s-pipeline && cd 16s-pipeline
 curl -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
 docker compose up -d
 ```
 
-Open **http://localhost:8016** in your browser.
+3. Open **http://localhost:8016** in your browser.
 
 ### Managing the Docker container
 
