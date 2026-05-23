@@ -59,32 +59,33 @@ The fastest way to run 16S Pipeline on **any operating system** (Windows, macOS,
 
 2. Open Docker Desktop and wait until it shows **"Docker Desktop is running"** (green icon in the system tray).
 
-3. Open **PowerShell** and run:
+3. Download this repository: click the green **Code** button on [GitHub](https://github.com/tatsu1207/16S-Pipeline) → **Download ZIP**, then extract it.
+
+4. Open **PowerShell**, navigate to the extracted folder, and run:
 
 ```powershell
-mkdir 16s-pipeline
-cd 16s-pipeline
-curl.exe -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
+cd path\to\16S-Pipeline
 docker compose up -d
 ```
 
-4. Open **http://localhost:8016** in your browser.
+5. Open **http://localhost:8016** in your browser.
 
-> First run pulls the image (~15 GB), which may take 5-15 minutes depending on your internet speed. Subsequent starts are instant.
+> The first run builds the Docker image (~15 GB), which may take 15-30 minutes. Subsequent starts are instant.
 
 ### macOS
 
 1. Download and install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) (supports both Apple Silicon and Intel).
 
-2. Open **Terminal** and run:
+2. Download and extract this repository (or `git clone`).
+
+3. Open **Terminal** and run:
 
 ```bash
-mkdir 16s-pipeline && cd 16s-pipeline
-curl -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
+cd path/to/16S-Pipeline
 docker compose up -d
 ```
 
-3. Open **http://localhost:8016** in your browser.
+4. Open **http://localhost:8016** in your browser.
 
 > **Note**: PICRUSt2-related analysis (functional prediction, pathway analysis, KEGG maps) is not available on Apple Silicon (ARM64) due to lack of native support.
 
@@ -92,23 +93,28 @@ docker compose up -d
 
 1. Install [Docker Engine](https://docs.docker.com/engine/install/) if not already installed.
 
-2. Run:
+2. Clone and run:
 
 ```bash
-mkdir 16s-pipeline && cd 16s-pipeline
-curl -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
+git clone https://github.com/tatsu1207/16S-Pipeline.git
+cd 16S-Pipeline
 docker compose up -d
 ```
 
 3. Open **http://localhost:8016** in your browser.
 
-### Managing the Docker container
+### Starting and stopping
+
+After the first build, you can manage the container in two ways:
+
+**Option A: Docker Desktop (Windows/macOS)** -- Open Docker Desktop, find the `16s-pipeline` container in the **Containers** tab, and use the play/stop buttons to start and stop it. No command line needed.
+
+**Option B: Command line**
 
 ```bash
-docker compose logs -f       # View logs
+docker compose up -d         # Start
 docker compose down          # Stop
-docker compose up -d         # Restart
-docker compose pull          # Update to latest version
+docker compose logs -f       # View logs
 
 # Use a different port
 PORT=9000 docker compose up -d
