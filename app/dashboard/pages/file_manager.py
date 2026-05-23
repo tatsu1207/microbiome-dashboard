@@ -894,10 +894,11 @@ def on_metadata_upload(content, filename, trigger):
             no_update,
         )
 
-    # Lowercase column headers and string values
+    # Lowercase column headers and metadata values (but not sample names)
     df.columns = [c.lower() for c in df.columns]
+    sample_col_name = df.columns[0]
     for col in df.columns:
-        if df[col].dtype == object:
+        if col != sample_col_name and df[col].dtype == object:
             df[col] = df[col].str.lower()
 
     # First column = sample name
