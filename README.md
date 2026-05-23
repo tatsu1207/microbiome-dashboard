@@ -57,35 +57,34 @@ The fastest way to run 16S Pipeline on **any operating system** (Windows, macOS,
 
 2. Open Docker Desktop and wait until it shows **"Docker Desktop is running"** (green icon in the system tray).
 
-3. Download this repository: click the green **Code** button on [GitHub](https://github.com/tatsu1207/16S-Pipeline) → **Download ZIP**, then extract it.
-
-4. Open **PowerShell**, navigate to the extracted folder, and run:
+3. Open **PowerShell** and run:
 
 ```powershell
-cd path\to\16S-Pipeline
-docker compose up -d
-```
-
-5. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
-
-> The first run builds the Docker image (~15 GB), which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or open Docker Desktop and start the container from the **Containers** tab -- it will start instantly.
-
-### macOS
-
-1. Download and install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) (supports both Apple Silicon and Intel).
-
-2. Download and extract this repository (or `git clone`).
-
-3. Open **Terminal** and run:
-
-```bash
-cd path/to/16S-Pipeline
+mkdir 16s-pipeline
+cd 16s-pipeline
+curl.exe -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
 docker compose up -d
 ```
 
 4. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
 
-> The first run builds the Docker image, which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or start the container from Docker Desktop.
+> The first run downloads the image (~15 GB), which may take 5-15 minutes depending on your internet speed. From the second time, you can either run `docker compose up -d` again or open Docker Desktop and start the container from the **Containers** tab -- it will start instantly.
+
+### macOS
+
+1. Download and install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/) (supports both Apple Silicon and Intel).
+
+2. Open **Terminal** and run:
+
+```bash
+mkdir 16s-pipeline && cd 16s-pipeline
+curl -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
+docker compose up -d
+```
+
+3. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
+
+> The first run downloads the image, which may take 5-15 minutes. From the second time, you can either run `docker compose up -d` again or start the container from Docker Desktop.
 
 > **Note**: PICRUSt2-related analysis (functional prediction, pathway analysis, KEGG maps) is not available on Apple Silicon (ARM64) due to lack of native support.
 
@@ -93,17 +92,17 @@ docker compose up -d
 
 1. Install [Docker Engine](https://docs.docker.com/engine/install/) if not already installed.
 
-2. Clone and run:
+2. Run:
 
 ```bash
-git clone https://github.com/tatsu1207/16S-Pipeline.git
-cd 16S-Pipeline
+mkdir 16s-pipeline && cd 16s-pipeline
+curl -O https://raw.githubusercontent.com/tatsu1207/16S-Pipeline/main/docker-compose.yml
 docker compose up -d
 ```
 
 3. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
 
-> The first run builds the Docker image, which may take 15-30 minutes. Subsequent starts with `docker compose up -d` are instant.
+> The first run downloads the image, which may take 5-15 minutes. Subsequent starts with `docker compose up -d` are instant.
 
 ### Managing the container
 
