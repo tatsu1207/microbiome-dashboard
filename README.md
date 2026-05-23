@@ -68,7 +68,7 @@ docker compose up -d
 
 5. Open **http://localhost:8016** in your browser.
 
-> The first run builds the Docker image (~15 GB), which may take 15-30 minutes. Subsequent starts are instant.
+> The first run builds the Docker image (~15 GB), which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or open Docker Desktop and start the container from the **Containers** tab -- it will start instantly.
 
 ### macOS
 
@@ -84,6 +84,8 @@ docker compose up -d
 ```
 
 4. Open **http://localhost:8016** in your browser.
+
+> The first run builds the Docker image, which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or start the container from Docker Desktop.
 
 > **Note**: PICRUSt2-related analysis (functional prediction, pathway analysis, KEGG maps) is not available on Apple Silicon (ARM64) due to lack of native support.
 
@@ -101,13 +103,9 @@ docker compose up -d
 
 3. Open **http://localhost:8016** in your browser.
 
-### Starting and stopping
+> The first run builds the Docker image, which may take 15-30 minutes. Subsequent starts with `docker compose up -d` are instant.
 
-After the first build, you can manage the container in two ways:
-
-**Option A: Docker Desktop (Windows/macOS)** -- Open Docker Desktop, find the `16s-pipeline` container in the **Containers** tab, and use the play/stop buttons to start and stop it. No command line needed.
-
-**Option B: Command line**
+### Managing the container
 
 ```bash
 docker compose up -d         # Start
