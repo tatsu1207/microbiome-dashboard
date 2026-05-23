@@ -1,8 +1,7 @@
 services:
   pipeline:
-    image: unnot1207/16s-pipeline:latest
-    # To build locally instead of pulling, uncomment the next line:
-    # build: .
+    # image: unnot1207/16s-pipeline:latest
+    build: .
     container_name: 16s-pipeline
     ports:
       - "${PORT:-8016}:8016"
