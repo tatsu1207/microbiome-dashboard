@@ -2,7 +2,7 @@
 
 A web-based tool for processing, managing, and visualizing 16S rRNA amplicon sequencing data. Built with Plotly Dash + FastAPI + SQLite.
 
-**Supported platforms**: Docker (Windows/macOS/Linux), native Linux (Ubuntu), Windows (WSL2), macOS (Apple Silicon)
+**Supported platforms**: Docker (Windows/macOS/Linux), native Linux (Ubuntu)
 
 **Supported input**: Illumina paired-end or single-end amplicon FASTQ files targeting specific 16S variable regions (V1-V2, V3-V4, V4, V4-V5, V5-V6). Full-length 16S long reads (PacBio HiFi, Nanopore) are also supported -- auto-detected at upload, processed with DADA2 using platform-appropriate error models.
 
@@ -34,8 +34,6 @@ A web-based tool for processing, managing, and visualizing 16S rRNA amplicon seq
 - [Installation](#installation)
 - [Running the App](#running-the-app)
 - [Project Structure](#project-structure)
-- [Windows WSL2 Setup](#windows-wsl2-setup)
-- [macOS Setup](#macos-setup)
 - [Troubleshooting](#troubleshooting)
 - [Citation](#citation)
 - [License](#license)
@@ -139,7 +137,7 @@ docker volume inspect 16s-pipeline_pipeline-data
 
 ## Prerequisites
 
-- **Operating System**: Ubuntu/Debian Linux or Windows (via WSL2). For macOS, use [Docker](#quick-start-docker).
+- **Operating System**: Ubuntu/Debian Linux. For Windows/macOS, use [Docker](#quick-start-docker).
 - **Conda**: Miniforge recommended ([install guide](https://github.com/conda-forge/miniforge))
 - **RAM**: 8 GB minimum, 16 GB recommended (16 GB required for PICRUSt2)
 - **Disk Space**: ~10 GB for software + reference databases
@@ -178,8 +176,7 @@ chmod +x setup_ubuntu.sh
 ./setup_ubuntu.sh
 ```
 
-> For Windows users: install WSL2 with Ubuntu first (see [Windows WSL2 Setup](#windows-wsl2-setup) below), then run the same `setup_ubuntu.sh` script inside WSL2.
-> For macOS/Windows users who prefer not to install natively: use the [Docker installation](#quick-start-docker) instead.
+> For Windows/macOS users: use the [Docker installation](#quick-start-docker) instead.
 
 > Expected time: 15-30 minutes depending on internet speed and system.
 
@@ -312,54 +309,6 @@ The E. coli 16S reference (`ecoli_16S.fasta`) is included in the repository and 
 
 ---
 
-## Windows WSL2 Setup
-
-If you're on Windows, you need WSL2 with Ubuntu first. If you already have it, skip to [Installation](#installation).
-
-### Step 1: Enable WSL
-
-Open **PowerShell as Administrator** and run:
-
-```powershell
-wsl --install
-```
-
-This installs WSL2 with Ubuntu by default. If WSL is already installed but you need Ubuntu:
-
-```powershell
-wsl --install -d Ubuntu-24.04
-```
-
-Restart your computer when prompted.
-
-### Step 2: Initial Ubuntu Setup
-
-After restart, Ubuntu will open automatically (or search for "Ubuntu" in the Start menu). It will ask you to create a username and password.
-
-### Step 3: Clone and run the WSL2 setup script
-
-```bash
-sudo apt update && sudo apt upgrade -y
-git clone https://github.com/tatsu1207/16S-Pipeline.git
-cd 16S-Pipeline
-chmod +x setup_ubuntu.sh
-./setup_ubuntu.sh
-```
-
-### Tips for WSL
-
-- **Access WSL files from Windows**: Open File Explorer and go to `\\wsl$\Ubuntu\home\<your-username>`
-- **Access Windows files from WSL**: Your C: drive is at `/mnt/c/`
-- **VS Code integration**: Install the [Remote - WSL](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-wsl) extension
-
----
-
-## macOS Setup
-
-For macOS users, we recommend the [Docker installation](#quick-start-docker) — it works on both Intel and Apple Silicon with no additional configuration.
-
----
-
 ## Troubleshooting
 
 ### Docker: container exits immediately
@@ -434,18 +383,6 @@ conda create -n picrust2_16S -c bioconda -c conda-forge picrust2 -y
 ```
 
 The setup script handles this automatically.
-
-### WSL runs out of memory / PICRUSt2 OOM killed (exit code 137)
-
-PICRUSt2's phylogenetic placement requires ~11 GB RAM. Create or edit `C:\Users\<YourUsername>\.wslconfig`:
-
-```ini
-[wsl2]
-memory=16GB
-swap=8GB
-```
-
-Then restart WSL from PowerShell: `wsl --shutdown`
 
 > The pipeline (FastQC, Cutadapt, DADA2, taxonomy, phylogeny) works fine with 8 GB. Only PICRUSt2 requires 16 GB. If PICRUSt2 fails, the rest of the pipeline still completes -- you can re-run PICRUSt2 later from the Pipeline Status page.
 
