@@ -66,7 +66,7 @@ cd path\to\16S-Pipeline
 docker compose up -d
 ```
 
-5. Open **http://localhost:8016** in your browser.
+5. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
 
 > The first run builds the Docker image (~15 GB), which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or open Docker Desktop and start the container from the **Containers** tab -- it will start instantly.
 
@@ -83,7 +83,7 @@ cd path/to/16S-Pipeline
 docker compose up -d
 ```
 
-4. Open **http://localhost:8016** in your browser.
+4. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
 
 > The first run builds the Docker image, which may take 15-30 minutes. From the second time, you can either run `docker compose up -d` again or start the container from Docker Desktop.
 
@@ -101,7 +101,7 @@ cd 16S-Pipeline
 docker compose up -d
 ```
 
-3. Open **http://localhost:8016** in your browser.
+3. Open <a href="http://localhost:8016" target="_blank">http://localhost:8016</a> in your browser.
 
 > The first run builds the Docker image, which may take 15-30 minutes. Subsequent starts with `docker compose up -d` are instant.
 
