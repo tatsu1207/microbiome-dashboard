@@ -341,50 +341,11 @@ docker compose up -d
 
 This deletes all uploaded data, pipeline outputs, and the database.
 
-### "conda: command not found"
+### PICRUSt2 fails (exit code 137 / OOM)
 
-```bash
-eval "$($HOME/miniforge3/bin/conda shell.bash hook)"
-conda init bash
-source ~/.bashrc
-```
+PICRUSt2 requires ~11 GB RAM. Increase Docker's memory allocation: Docker Desktop > **Settings** > **Resources** > **Memory** (set to 16 GB).
 
-### R package installation fails (DADA2)
-
-Make sure system libraries are installed, then retry:
-
-```bash
-conda activate dada2_16S
-Rscript -e 'BiocManager::install("dada2", force=TRUE)'
-```
-
-### "Permission denied" on setup script
-
-```bash
-chmod +x setup_ubuntu.sh
-```
-
-### Port already in use
-
-```bash
-# Find and kill the process using the port
-lsof -ti:8050 | xargs kill -9
-
-# Or use a different port
-uvicorn app.main:app --reload --reload-exclude data --host 0.0.0.0 --port 8051
-```
-
-### PICRUSt2 installation fails
-
-PICRUSt2 requires its own environment due to dependency conflicts:
-
-```bash
-conda create -n picrust2_16S -c bioconda -c conda-forge picrust2 -y
-```
-
-The setup script handles this automatically.
-
-> The pipeline (FastQC, Cutadapt, DADA2, taxonomy, phylogeny) works fine with 8 GB. Only PICRUSt2 requires 16 GB. If PICRUSt2 fails, the rest of the pipeline still completes -- you can re-run PICRUSt2 later from the Pipeline Status page.
+> The main pipeline (FastQC, Cutadapt, DADA2, taxonomy, phylogeny) works fine with 8 GB. Only PICRUSt2 requires 16 GB. If PICRUSt2 fails, the rest of the pipeline still completes -- you can re-run PICRUSt2 later from the Pipeline Status page.
 
 ---
 
